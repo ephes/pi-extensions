@@ -10,6 +10,7 @@
 - Add a bundled-agent discovery test for the `agent_workflow` extension
 - Harden agent workflow subprocesses with `--no-extensions`, `--no-prompt-templates`, and `--no-skills`
 - Truncate chained `{previous}` context before handing it to the next delegated agent step
+- Add authenticated model fallback for `agent_workflow` subprocesses when bundled model IDs are unavailable
 - Document bundled model ID assumptions and reviewer bash limitations
 - Harden `web_content` against redirect-based SSRF
 - Block IPv4-mapped IPv6 private and loopback addresses

@@ -8,6 +8,7 @@ import { getMarkdownTheme, type ExtensionAPI } from "@mariozechner/pi-coding-age
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
+import { resolveAgentModel, type ModelRef } from "./model_resolution.js";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -30,6 +31,7 @@ interface SingleResult {
   exitCode: number;
   messages: Message[];
   stderr: string;
+  warnings: string[];
   usage: UsageStats;
   model?: string;
   stopReason?: string;
@@ -170,6 +172,27 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
   return items;
 }
 
+function formatWarningsBlock(warnings: string[]): string {
+  if (warnings.length === 0) return "";
+  return `Warnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}`;
+}
+
+function combineTextWithWarnings(text: string, warnings: string[]): string {
+  const warningsBlock = formatWarningsBlock(warnings);
+  if (!warningsBlock) return text;
+  return text ? `${warningsBlock}\n\n${text}` : warningsBlock;
+}
+
+function getErrorText(result: SingleResult): string {
+  const baseText = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+  const warnings = result.warnings.filter((warning) => warning !== baseText);
+  return combineTextWithWarnings(baseText, warnings);
+}
+
+function getSuccessText(result: SingleResult): string {
+  return combineTextWithWarnings(getFinalOutput(result.messages) || "(no output)", result.warnings);
+}
+
 async function mapWithConcurrencyLimit<TInput, TOutput>(
   items: TInput[],
   concurrency: number,
@@ -216,6 +239,8 @@ function truncatePreviousOutput(previousOutput: string): string {
 async function runSingleAgent(
   defaultCwd: string,
   agents: AgentConfig[],
+  availableModels: ModelRef[],
+  currentModel: ModelRef | undefined,
   agentName: string,
   task: string,
   cwd: string | undefined,
@@ -233,7 +258,23 @@ async function runSingleAgent(
       exitCode: 1,
       messages: [],
       stderr: `Unknown agent: ${agentName}`,
+      warnings: [],
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+      step,
+    };
+  }
+
+  const modelSelection = resolveAgentModel(agent.model, availableModels, currentModel);
+  if (!modelSelection.resolvedModel) {
+    return {
+      agent: agent.name,
+      task,
+      exitCode: 1,
+      messages: [],
+      stderr: "No authenticated Pi models are configured. Run /login or configure an API key.",
+      warnings: modelSelection.warning ? [modelSelection.warning] : [],
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+      model: agent.model,
       step,
     };
   }
@@ -246,8 +287,9 @@ async function runSingleAgent(
     "--no-extensions",
     "--no-prompt-templates",
     "--no-skills",
+    "--model",
+    modelSelection.resolvedModel,
   ];
-  if (agent.model) args.push("--model", agent.model);
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
   let tempPromptDir: string | null = null;
@@ -260,15 +302,16 @@ async function runSingleAgent(
     exitCode: 0,
     messages: [],
     stderr: "",
+    warnings: modelSelection.warning ? [modelSelection.warning] : [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-    model: agent.model,
+    model: modelSelection.resolvedModel,
     step,
   };
 
   const emitUpdate = () => {
     if (!onUpdate) return;
     onUpdate({
-      content: [{ type: "text", text: getFinalOutput(currentResult.messages) || "(running...)" }],
+      content: [{ type: "text", text: combineTextWithWarnings(getFinalOutput(currentResult.messages) || "(running...)", currentResult.warnings) }],
       details: makeDetails([currentResult]),
     });
   };
@@ -423,6 +466,13 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const discovery = discoverBundledAgents();
       const agents = discovery.agents;
+      const availableModels: ModelRef[] = ctx.modelRegistry.getAvailable().map((model) => ({
+        provider: model.provider,
+        id: model.id,
+      }));
+      const currentModel: ModelRef | undefined = ctx.model
+        ? { provider: ctx.model.provider, id: ctx.model.id }
+        : undefined;
 
       const hasChain = (params.chain?.length ?? 0) > 0;
       const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -463,6 +513,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           const result = await runSingleAgent(
             ctx.cwd,
             agents,
+            availableModels,
+            currentModel,
             step.agent,
             taskWithContext,
             step.cwd,
@@ -475,9 +527,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
           const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
           if (isError) {
-            const errorMessage = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
             return {
-              content: [{ type: "text", text: `Chain stopped at step ${index + 1} (${step.agent}): ${errorMessage}` }],
+              content: [{ type: "text", text: `Chain stopped at step ${index + 1} (${step.agent}): ${getErrorText(result)}` }],
               details: makeDetails("chain")(results),
               isError: true,
             };
@@ -487,7 +538,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         }
 
         return {
-          content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
+          content: [{ type: "text", text: getSuccessText(results[results.length - 1]) }],
           details: makeDetails("chain")(results),
         };
       }
@@ -506,6 +557,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           exitCode: -1,
           messages: [],
           stderr: "",
+          warnings: [],
           usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
         }));
 
@@ -523,6 +575,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           const result = await runSingleAgent(
             ctx.cwd,
             agents,
+            availableModels,
+            currentModel,
             taskItem.agent,
             taskItem.task,
             taskItem.cwd,
@@ -543,9 +597,10 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
         const successCount = results.filter((result) => result.exitCode === 0).length;
         const summaries = results.map((result) => {
-          const output = getFinalOutput(result.messages);
-          const preview = output.length > 100 ? `${output.slice(0, 100)}...` : output;
-          return `[${result.agent}] ${result.exitCode === 0 ? "completed" : "failed"}: ${preview || "(no output)"}`;
+          const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+          const resultText = isError ? getErrorText(result) : getSuccessText(result);
+          const preview = resultText.length > 100 ? `${resultText.slice(0, 100)}...` : resultText;
+          return `[${result.agent}] ${isError ? "failed" : "completed"}: ${preview || "(no output)"}`;
         });
 
         return {
@@ -558,6 +613,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         const result = await runSingleAgent(
           ctx.cwd,
           agents,
+          availableModels,
+          currentModel,
           params.agent,
           params.task,
           params.cwd,
@@ -568,15 +625,14 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         );
         const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
         if (isError) {
-          const errorMessage = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
           return {
-            content: [{ type: "text", text: `Agent ${result.agent} failed: ${errorMessage}` }],
+            content: [{ type: "text", text: `Agent ${result.agent} failed: ${getErrorText(result)}` }],
             details: makeDetails("single")([result]),
             isError: true,
           };
         }
         return {
-          content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+          content: [{ type: "text", text: getSuccessText(result) }],
           details: makeDetails("single")([result]),
         };
       }
@@ -668,6 +724,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           if (isError && single.stopReason) header += ` ${theme.fg("error", `[${single.stopReason}]`)}`;
           container.addChild(new Text(header, 0, 0));
           if (isError && single.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${single.errorMessage}`), 0, 0));
+          if (single.warnings.length > 0) container.addChild(new Text(theme.fg("warning", formatWarningsBlock(single.warnings)), 0, 0));
           container.addChild(new Spacer(1));
           container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
           container.addChild(new Text(theme.fg("dim", single.task), 0, 0));
@@ -691,6 +748,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         }
 
         let text = `${icon} ${theme.fg("toolTitle", theme.bold(single.agent))}`;
+        if (single.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(single.warnings))}`;
         if (displayItems.length === 0) {
           text += `\n${theme.fg("muted", finalOutput || "(no output)")}`;
         } else {
@@ -717,6 +775,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             container.addChild(new Spacer(1));
             container.addChild(new Text(`${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", entry.agent)} ${itemIcon}`, 0, 0));
             container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", entry.task), 0, 0));
+            if (entry.warnings.length > 0) container.addChild(new Text(theme.fg("warning", formatWarningsBlock(entry.warnings)), 0, 0));
             for (const item of displayItems) {
               if (item.type === "toolCall") container.addChild(new Text(theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)), 0, 0));
             }
@@ -738,6 +797,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         for (const entry of details.results) {
           const itemIcon = entry.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
           text += `\n\n${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", entry.agent)} ${itemIcon}`;
+          if (entry.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(entry.warnings))}`;
           const displayItems = getDisplayItems(entry.messages);
           text += `\n${displayItems.length === 0 ? theme.fg("muted", "(no output)") : renderDisplayItems(displayItems, 5)}`;
         }
@@ -764,6 +824,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           container.addChild(new Spacer(1));
           container.addChild(new Text(`${theme.fg("muted", "─── ")}${theme.fg("accent", entry.agent)} ${itemIcon}`, 0, 0));
           container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", entry.task), 0, 0));
+          if (entry.warnings.length > 0) container.addChild(new Text(theme.fg("warning", formatWarningsBlock(entry.warnings)), 0, 0));
           for (const item of displayItems) {
             if (item.type === "toolCall") container.addChild(new Text(theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)), 0, 0));
           }
@@ -787,6 +848,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : entry.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
         const displayItems = getDisplayItems(entry.messages);
         text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", entry.agent)} ${itemIcon}`;
+        if (entry.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(entry.warnings))}`;
         text += `\n${displayItems.length === 0 ? theme.fg("muted", entry.exitCode === -1 ? "(running...)" : "(no output)") : renderDisplayItems(displayItems, 5)}`;
       }
       if (!isRunning) {

@@ -35,12 +35,19 @@ Bundled prompt templates live in `prompts/` and are registered through the Pi pa
 - `/review` — review the current diff with the bundled reviewer
 - `/implement-and-review` — implement, review, then apply feedback in a chain
 
-Bundled agent model IDs currently assume these models exist in the local Pi setup:
+Bundled agent frontmatter prefers these model IDs:
 
 - `implementer` — `openai/gpt-5.4`
 - `reviewer` — `anthropic/claude-opus-4-6`
 
-If your local Pi configuration uses different model IDs, edit the frontmatter in `agents/*.md` to match your environment.
+If an exact bundled model is unavailable, `agent_workflow` now falls back in this order:
+
+1. the current Pi session model, when it is authenticated
+2. the first authenticated model returned by Pi
+
+If no authenticated Pi models are available at all, the delegated run fails early with a clear `/login` or API key hint.
+
+If you want deterministic model pinning instead of fallback behavior, edit the frontmatter in `agents/*.md` to match your environment.
 
 ## Requirements
 
