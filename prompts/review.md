@@ -1,7 +1,7 @@
 ---
-description: Review the current diff with the bundled reviewer subagent
+description: Review the current diff with the bundled reviewer agent workflow
 ---
-Use the `subagent` tool in single-agent mode.
+Use the `agent_workflow` tool in single-agent mode.
 
 Agent: `reviewer`
 Task:

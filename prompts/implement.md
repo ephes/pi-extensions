@@ -1,7 +1,7 @@
 ---
-description: Implement a requested change with the bundled implementer subagent
+description: Implement a requested change with the bundled implementer agent workflow
 ---
-Use the `subagent` tool in single-agent mode.
+Use the `agent_workflow` tool in single-agent mode.
 
 Agent: `implementer`
 Task:

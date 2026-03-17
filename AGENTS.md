@@ -9,7 +9,7 @@ It currently uses a single-package layout and may later grow into a multi-packag
 
 ## Structure
 
-- `agents/` — bundled subagent definitions used by the subagent extension
+- `agents/` — bundled agent definitions used by the `agent_workflow` extension
 - `extensions/` — Pi extension entry points
 - `prompts/` — prompt templates registered through the Pi package manifest
 - `shared/` — shared helpers used by multiple extensions
@@ -58,8 +58,8 @@ npm run check
 
 - Keep tool names accurate and non-misleading.
 - Put reusable network/auth/parsing logic in `shared/`.
-- Keep bundled subagent prompts in `agents/` and workflow templates in `prompts/`.
-- Add tests for security-sensitive helpers, parsing logic, and subagent workflows when practical.
+- Keep bundled agent prompts in `agents/` and workflow templates in `prompts/`.
+- Add tests for security-sensitive helpers, parsing logic, and agent workflow behavior when practical.
 - Keep `BACKLOG.md` short and actionable.
 - Update `README.md` when developer commands, repo structure, or extension behavior changes.
 - Update `CHANGELOG.md` for user-visible or developer-visible changes.
@@ -67,6 +67,6 @@ npm run check
 ## Notes
 
 - `web_content` is security-sensitive. Preserve redirect validation, private-IP blocking, and fetch-size limits when changing it.
-- `subagent` depends on bundled files in `agents/` and `prompts/`; keep package manifest entries and runtime discovery aligned.
-- Keep subagent chain handoffs concise; oversized `{previous}` context should be truncated or summarized rather than passed through verbatim.
+- `agent_workflow` depends on bundled files in `agents/` and `prompts/`; keep package manifest entries and runtime discovery aligned.
+- Keep agent workflow chain handoffs concise; oversized `{previous}` context should be truncated or summarized rather than passed through verbatim.
 - Prefer small, composable extensions with shared helpers rather than duplicating logic across entry points.

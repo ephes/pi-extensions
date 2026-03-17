@@ -20,11 +20,11 @@ pi install git:github.com/jochen/pi-extensions
 
 - `kagi_search` — search the web with the official Kagi Search API
 - `web_content` — fetch and extract readable page content from a URL
-- `subagent` — delegate work to bundled specialist subagents with isolated context
+- `agent_workflow` — run bundled specialist agent workflows with isolated context
 
-## Bundled subagents and prompts
+## Bundled agents and prompts
 
-Bundled subagents live in `agents/`:
+Bundled agents live in `agents/`:
 
 - `implementer` — implementation specialist with `read`, `bash`, `edit`, and `write`
 - `reviewer` — review specialist with `read`, `grep`, `find`, `ls`, and read-only git bash usage
@@ -91,7 +91,7 @@ pi install <path-to-pi-extensions>
 ## Structure
 
 ```text
-agents/             Bundled subagent definitions used by the subagent extension
+agents/             Bundled agent definitions used by the agent_workflow extension
 extensions/         Pi extension entry points
 prompts/            Prompt templates registered through the Pi package manifest
 shared/             Shared helpers for auth, Kagi API access, and web fetching
@@ -105,8 +105,9 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 ## Notes
 
 - This repository starts as a single Pi package with multiple extension files.
+- The package manifest registers extensions via the conventional `./extensions` directory so installed Pi sessions discover all bundled tools end to end.
 - If it grows substantially, it can later be split into multiple packages inside the same repo.
 - `web_content` validates redirect targets, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
-- `subagent` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
-- Subagent subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
-- Chain mode truncates `{previous}` context before passing it to the next subagent step to avoid oversized command-line prompts.
+- `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
+- Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
+- Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts.

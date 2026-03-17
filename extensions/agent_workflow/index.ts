@@ -37,7 +37,7 @@ interface SingleResult {
   step?: number;
 }
 
-interface SubagentDetails {
+interface AgentWorkflowDetails {
   mode: "single" | "parallel" | "chain";
   agentsDir: string;
   results: SingleResult[];
@@ -49,7 +49,7 @@ type DisplayItem =
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
-  details: SubagentDetails;
+  details: AgentWorkflowDetails;
   isError?: boolean;
 };
 
@@ -194,7 +194,7 @@ async function mapWithConcurrencyLimit<TInput, TOutput>(
 }
 
 function writePromptToTempFile(agentName: string, prompt: string): { dir: string; filePath: string } {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-workflow-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tempDir, `prompt-${safeName}.md`);
   fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
@@ -208,7 +208,7 @@ function truncatePreviousOutput(previousOutput: string): string {
 
   const preserved = previousOutput.slice(0, MAX_CHAIN_CONTEXT_CHARS);
   return [
-    `[Previous subagent output truncated from ${previousOutput.length} to ${MAX_CHAIN_CONTEXT_CHARS} characters.]`,
+    `[Previous agent workflow output truncated from ${previousOutput.length} to ${MAX_CHAIN_CONTEXT_CHARS} characters.]`,
     preserved,
   ].join("\n\n");
 }
@@ -222,7 +222,7 @@ async function runSingleAgent(
   step: number | undefined,
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
-  makeDetails: (results: SingleResult[]) => SubagentDetails,
+  makeDetails: (results: SingleResult[]) => AgentWorkflowDetails,
 ): Promise<SingleResult> {
   const agent = agents.find((candidate) => candidate.name === agentName);
 
@@ -372,7 +372,7 @@ async function runSingleAgent(
     });
 
     currentResult.exitCode = exitCode;
-    if (aborted) throw new Error("Subagent was aborted.");
+    if (aborted) throw new Error("Agent workflow was aborted.");
     return currentResult;
   } finally {
     if (tempPromptPath) {
@@ -395,30 +395,30 @@ async function runSingleAgent(
 const TaskItem = Type.Object({
   agent: Type.String({ description: "Name of the bundled agent to invoke." }),
   task: Type.String({ description: "Task to delegate to the bundled agent." }),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the subagent process." })),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent workflow process." })),
 });
 
-const SubagentParams = Type.Object({
+const AgentWorkflowParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the bundled agent to invoke (single mode)." })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)." })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution." })),
   chain: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for sequential execution. Use {previous} to insert prior output." })),
-  cwd: Type.Optional(Type.String({ description: "Working directory for the subagent process (single mode)." })),
+  cwd: Type.Optional(Type.String({ description: "Working directory for the agent workflow process (single mode)." })),
   mode: Type.Optional(StringEnum(["single", "parallel", "chain"] as const, { description: "Optional explicit mode for readability." })),
 });
 
-export default function subagentExtension(pi: ExtensionAPI) {
+export default function agentWorkflowExtension(pi: ExtensionAPI) {
   pi.registerTool({
-    name: "subagent",
-    label: "Subagent",
-    description: "Delegate work to bundled specialist subagents with isolated context. Supports single, parallel, and chain modes.",
-    promptSnippet: "Delegate work to bundled specialist subagents with isolated context.",
+    name: "agent_workflow",
+    label: "Agent Workflow",
+    description: "Run bundled specialist agent workflows with isolated context. Supports single, parallel, and chain modes.",
+    promptSnippet: "Run bundled specialist agent workflows with isolated context.",
     promptGuidelines: [
       "Use the bundled implementer for implementation tasks that benefit from an isolated context window.",
       "Use the bundled reviewer for review tasks and keep it read-only.",
-      "Use chain mode when a later subagent should consume the previous subagent's output via {previous}.",
+      "Use chain mode when a later agent should consume the previous agent's output via {previous}.",
     ],
-    parameters: SubagentParams,
+    parameters: AgentWorkflowParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const discovery = discoverBundledAgents();
@@ -429,7 +429,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       const hasSingle = Boolean(params.agent && params.task);
       const modeCount = Number(hasChain) + Number(hasTasks) + Number(hasSingle);
 
-      const makeDetails = (mode: "single" | "parallel" | "chain") => (results: SingleResult[]): SubagentDetails => ({
+      const makeDetails = (mode: "single" | "parallel" | "chain") => (results: SingleResult[]): AgentWorkflowDetails => ({
         mode,
         agentsDir: discovery.agentsDir,
         results,
@@ -589,7 +589,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
     renderCall(args, theme) {
       if (Array.isArray(args.chain) && args.chain.length > 0) {
-        let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `chain (${args.chain.length} steps)`);
+        let text = theme.fg("toolTitle", theme.bold("agent_workflow ")) + theme.fg("accent", `chain (${args.chain.length} steps)`);
         for (const [index, step] of args.chain.slice(0, 3).entries()) {
           const task = typeof step.task === "string" ? step.task.replace(/\{previous\}/g, "").trim() : "";
           const preview = task.length > 40 ? `${task.slice(0, 40)}...` : task;
@@ -600,7 +600,7 @@ export default function subagentExtension(pi: ExtensionAPI) {
       }
 
       if (Array.isArray(args.tasks) && args.tasks.length > 0) {
-        let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", `parallel (${args.tasks.length} tasks)`);
+        let text = theme.fg("toolTitle", theme.bold("agent_workflow ")) + theme.fg("accent", `parallel (${args.tasks.length} tasks)`);
         for (const task of args.tasks.slice(0, 3)) {
           const preview = typeof task.task === "string" && task.task.length > 40 ? `${task.task.slice(0, 40)}...` : String(task.task ?? "...");
           text += `\n  ${theme.fg("accent", String(task.agent ?? "..."))}${theme.fg("dim", ` ${preview}`)}`;
@@ -613,14 +613,14 @@ export default function subagentExtension(pi: ExtensionAPI) {
       const task = String(args.task ?? "...");
       const preview = task.length > 60 ? `${task.slice(0, 60)}...` : task;
       return new Text(
-        theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("accent", agentName) + `\n  ${theme.fg("dim", preview)}`,
+        theme.fg("toolTitle", theme.bold("agent_workflow ")) + theme.fg("accent", agentName) + `\n  ${theme.fg("dim", preview)}`,
         0,
         0,
       );
     },
 
     renderResult(result, { expanded }, theme) {
-      const details = result.details as SubagentDetails | undefined;
+      const details = result.details as AgentWorkflowDetails | undefined;
       if (!details || details.results.length === 0) {
         const first = result.content.find((item) => item.type === "text");
         return new Text(first?.text ?? "(no output)", 0, 0);
@@ -798,3 +798,6 @@ export default function subagentExtension(pi: ExtensionAPI) {
     },
   });
 }
+
+
+

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { discoverBundledAgents } from "../extensions/subagent/agents.js";
+import { discoverBundledAgents } from "../extensions/agent_workflow/agents.js";
 
 test("discoverBundledAgents finds bundled implementer and reviewer definitions", () => {
   const discovery = discoverBundledAgents();

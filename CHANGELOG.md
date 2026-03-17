@@ -2,12 +2,14 @@
 
 ## Unreleased
 
-- Add a `subagent` extension with bundled `implementer` and `reviewer` agent definitions
-- Add `/implement`, `/review`, and `/implement-and-review` prompt templates for bundled subagent workflows
+- Rename the workflow tool from `subagent` to `agent_workflow` to reduce collisions and better match its orchestration role
+- Add an `agent_workflow` extension with bundled `implementer` and `reviewer` agent definitions
+- Add `/implement`, `/review`, and `/implement-and-review` prompt templates for bundled agent workflows
+- Fix package extension discovery for installed Pi sessions by registering the conventional `./extensions` directory in the manifest
 - Register package prompt templates through the Pi package manifest
-- Add a bundled-agent discovery test for the `subagent` extension
-- Harden subagent subprocesses with `--no-extensions`, `--no-prompt-templates`, and `--no-skills`
-- Truncate chained `{previous}` context before handing it to the next subagent step
+- Add a bundled-agent discovery test for the `agent_workflow` extension
+- Harden agent workflow subprocesses with `--no-extensions`, `--no-prompt-templates`, and `--no-skills`
+- Truncate chained `{previous}` context before handing it to the next delegated agent step
 - Document bundled model ID assumptions and reviewer bash limitations
 - Harden `web_content` against redirect-based SSRF
 - Block IPv4-mapped IPv6 private and loopback addresses

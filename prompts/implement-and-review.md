@@ -1,7 +1,7 @@
 ---
 description: Implement a change, review it, then apply the review feedback
 ---
-Use the `subagent` tool with the chain parameter to execute this workflow:
+Use the `agent_workflow` tool with the chain parameter to execute this workflow:
 
 1. First, use the `implementer` agent to implement the following in the current repository and run `just check` before finishing:
    $@
