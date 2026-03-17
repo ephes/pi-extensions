@@ -33,7 +33,7 @@ export KAGI_API_KEY="your-api-key"
 
 ## Development
 
-Install dependencies for editor support, linting, tests, and type-checking:
+Install dependencies for editor support, linting, tests, type-checking, and repo line counts:
 
 ```bash
 npm install
@@ -41,6 +41,7 @@ just lint
 just typecheck
 just test
 just check
+just loc
 ```
 
 Equivalent npm commands:
@@ -70,7 +71,7 @@ pi install <path-to-pi-extensions>
 extensions/         Pi extension entry points
 shared/             Shared helpers for auth, Kagi API access, and web fetching
 tests/              Unit tests for security-sensitive helpers and formatting
-justfile            Developer shorthands for lint, typecheck, test, and check
+justfile            Developer shorthands for lint, typecheck, test, check, and loc
 eslint.config.mjs   ESLint configuration for the TypeScript codebase
 BACKLOG.md          Follow-up work tracked as Next / Later items
 AGENTS.md           Repo-specific developer guidance for coding agents
