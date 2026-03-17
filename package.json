@@ -11,7 +11,9 @@
     "web-access"
   ],
   "files": [
+    "agents",
     "extensions",
+    "prompts",
     "shared",
     "README.md",
     "LICENSE",
@@ -19,7 +21,11 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/*.ts",
+      "./extensions/*/index.ts"
+    ],
+    "prompts": [
+      "./prompts"
     ]
   },
   "scripts": {

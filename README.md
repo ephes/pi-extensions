@@ -20,6 +20,27 @@ pi install git:github.com/jochen/pi-extensions
 
 - `kagi_search` — search the web with the official Kagi Search API
 - `web_content` — fetch and extract readable page content from a URL
+- `subagent` — delegate work to bundled specialist subagents with isolated context
+
+## Bundled subagents and prompts
+
+Bundled subagents live in `agents/`:
+
+- `implementer` — implementation specialist with `read`, `bash`, `edit`, and `write`
+- `reviewer` — review specialist with `read`, `grep`, `find`, `ls`, and read-only git bash usage
+
+Bundled prompt templates live in `prompts/` and are registered through the Pi package manifest:
+
+- `/implement` — implement with the bundled implementer
+- `/review` — review the current diff with the bundled reviewer
+- `/implement-and-review` — implement, review, then apply feedback in a chain
+
+Bundled agent model IDs currently assume these models exist in the local Pi setup:
+
+- `implementer` — `openai/gpt-5.4`
+- `reviewer` — `anthropic/claude-opus-4-6`
+
+If your local Pi configuration uses different model IDs, edit the frontmatter in `agents/*.md` to match your environment.
 
 ## Requirements
 
@@ -43,6 +64,8 @@ just test
 just check
 just loc
 ```
+
+`just check` and `npm run check` both run lint, typecheck, and tests.
 
 Equivalent npm commands:
 
@@ -68,7 +91,9 @@ pi install <path-to-pi-extensions>
 ## Structure
 
 ```text
+agents/             Bundled subagent definitions used by the subagent extension
 extensions/         Pi extension entry points
+prompts/            Prompt templates registered through the Pi package manifest
 shared/             Shared helpers for auth, Kagi API access, and web fetching
 tests/              Unit tests for security-sensitive helpers and formatting
 justfile            Developer shorthands for lint, typecheck, test, check, and loc
@@ -82,3 +107,6 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - This repository starts as a single Pi package with multiple extension files.
 - If it grows substantially, it can later be split into multiple packages inside the same repo.
 - `web_content` validates redirect targets, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
+- `subagent` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
+- Subagent subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
+- Chain mode truncates `{previous}` context before passing it to the next subagent step to avoid oversized command-line prompts.

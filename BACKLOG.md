@@ -4,6 +4,7 @@ Keep this file short and actionable.
 
 ## Next
 
+- [ ] Add integration tests for the `subagent` extension, especially chained workflow behavior and subprocess error handling.
 - [ ] Add more unit tests for redirect handling, fetch-size limiting, and Kagi response formatting.
 - [ ] Align `kagi_search` limit handling between `extensions/kagi_search.ts` and `shared/kagi.ts`.
 - [ ] Improve HTML entity decoding and evaluate a more robust readability/extraction approach.
