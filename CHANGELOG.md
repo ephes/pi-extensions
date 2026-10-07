@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a GitHub Actions CI workflow (Node 22, `npm ci`, `npm run check`) with SHA-pinned actions, npm caching and read-only permissions
+- Refresh vulnerable transitive dev dependencies in `package-lock.json` (clears the critical `protobufjs` advisory); the remaining advisories need a breaking `@mariozechner/pi-*` upgrade
 - Rename the workflow tool from `subagent` to `agent_workflow` to reduce collisions and better match its orchestration role
 - Add an `agent_workflow` extension with bundled `implementer` and `reviewer` agent definitions
 - Add `/implement`, `/review`, and `/implement-and-review` prompt templates for bundled agent workflows
