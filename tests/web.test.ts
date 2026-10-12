@@ -39,6 +39,22 @@ test("isBlockedIp allows public addresses", () => {
   }
 });
 
+test("isBlockedIp classifies equivalent IPv6 spellings consistently", () => {
+  const groups = [
+    { blocked: true, addresses: ["::1", "0:0:0:0:0:0:0:1", "0000:0000:0000:0000:0000:0000:0000:0001", "0::1"] },
+    { blocked: true, addresses: ["::", "0:0:0:0:0:0:0:0", "0000::0000"] },
+    { blocked: true, addresses: ["::ffff:127.0.0.1", "0:0:0:0:0:ffff:7f00:1", "0000:0000:0000:0000:0000:FFFF:7F00:0001", "0::ffff:7f00:1"] },
+    { blocked: true, addresses: ["::ffff:192.168.1.1", "0000:0000:0000:0000:0000:ffff:c0a8:0101"] },
+    { blocked: true, addresses: ["fe80::1", "FE80:0000:0000:0000:0000:0000:0000:0001", "fe80::1%eth0"] },
+    { blocked: true, addresses: ["fd00::1", "FD00:0000:0000:0000:0000:0000:0000:0001", "ff02::1"] },
+    { blocked: false, addresses: ["2606:4700:4700::1111", "2606:4700:4700:0000:0000:0000:0000:1111"] },
+    { blocked: false, addresses: ["::ffff:8.8.8.8", "0000:0000:0000:0000:0000:FFFF:0808:0808"] },
+  ];
+  for (const { blocked, addresses } of groups) {
+    for (const ip of addresses) assert.equal(isBlockedIp(ip), blocked, ip);
+  }
+});
+
 test("validateUrl rejects unsupported schemes and local targets", () => {
   assert.throws(() => validateUrl(new URL("ftp://example.com/file.txt")), /Unsupported URL scheme/);
   assert.throws(() => validateUrl(new URL("http://localhost/test")), /Blocked local hostname/);
@@ -150,6 +166,17 @@ test("redirect with any private fallback answer is rejected before connecting", 
   });
   await assert.rejects(fetchReadablePage("http://public.example/"), /Blocked hostname/);
   assert.deepEqual(connections, ["public.example"]);
+});
+
+test("expanded loopback DNS answer is rejected before transport", async (t) => {
+  t.mock.method(dns, "lookup", async () => [...approved, { address: "0:0:0:0:0:0:0:1", family: 6 }]);
+  const connect = t.mock.method(net, "connect", () => { throw new Error("Unexpected connection"); });
+  const tlsConnect = t.mock.method(tls, "connect", () => { throw new Error("Unexpected TLS connection"); });
+  for (const scheme of ["http", "https"]) {
+    await assert.rejects(fetchReadablePage(`${scheme}://public.example/`), /Blocked hostname/);
+  }
+  assert.equal(connect.mock.callCount(), 0);
+  assert.equal(tlsConnect.mock.callCount(), 0);
 });
 
 test("IPv6 private literals are rejected before transport", async () => {

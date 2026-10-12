@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Canonicalize IPv6 addresses before web-fetch classification, blocking expanded loopback and equivalent private mapped forms in both literals and DNS answers
+
 - Decode HTML entities in one pass with a maintained runtime decoder, preserving escaped literals and supporting named and numeric Unicode references in page titles and bodies
 
 - Fix agent workflow cancellation escalation and listener/timer cleanup; fail signal-terminated or missing-exit-code runs and stop incomplete chain handoffs

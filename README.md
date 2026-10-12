@@ -118,6 +118,7 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - This repository starts as a single Pi package with multiple extension files.
 - The package manifest registers extensions via the conventional `./extensions` directory so installed Pi sessions discover all bundled tools end to end.
 - If it grows substantially, it can later be split into multiple packages inside the same repo.
+- `web_content` canonicalizes IPv6 addresses before private/local classification, so compressed and expanded forms receive the same checks for both literal hosts and DNS answers.
 - `web_content` validates and pins DNS answers for each redirect target (including IPv4/IPv6 fallback), preserves the original Host/TLS name, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
 - `web_content` decodes HTML entities once in extracted titles and body text, including named and numeric Unicode references. Escaped literals such as `&amp;lt;` remain `&lt;`; malformed references follow HTML decoding rules.
 - `web_content` has one 30-second total deadline covering DNS, redirects, headers, and body consumption. Timeout errors invite a retry; caller cancellation remains immediate.

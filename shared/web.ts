@@ -176,8 +176,10 @@ export function isBlockedIp(ip: string): boolean {
     return true;
   }
 
-  const normalized = ip.toLowerCase();
-  if (normalized === "::" || normalized === "0:0:0:0:0:0:0:0" || normalized === "::1") {
+  // WHATWG URL canonicalizes equivalent IPv6 forms; zone IDs are not part
+  // of the address and are unsupported by URL, so remove them after validation.
+  const normalized = unbracket(new URL(`http://[${ip.split("%", 1)[0]}]/`).hostname);
+  if (normalized === "::" || normalized === "::1") {
     return true;
   }
 
