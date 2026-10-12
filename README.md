@@ -130,3 +130,16 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
 - Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts.
 - Agent workflow cancellation sends SIGTERM, escalates to SIGKILL after five seconds if the child has not closed, and waits for close before cleanup. Signal termination or a missing exit code fails the run and stops chained handoffs; partial output is not treated as success.
+
+Agent workflow stdout uses streaming, strict UTF-8 decoding, including the final
+line at EOF. The 1 MiB ceiling applies to every event, including cumulative
+`agent_end` / `turn_end` events and partial `message_update` events. Runs with
+larger events fail even if earlier work completed; this is a deliberate bounded
+protocol contract. Invalid or incomplete UTF-8 and protocol lines exceeding 1 MiB fail
+the run, terminate the child (SIGTERM, then SIGKILL after five seconds), and wait
+for close before removing the prompt. Diagnostic stderr keeps only its last
+64 KiB. Message details keep the most recent entries within 4 MiB and 256
+messages, with truncation warnings; usage totals still include evicted messages.
+Final output and chain handoffs use the retained messages. Prompt files have
+owner-only permissions, and failed prompt writes remove their owned temporary
+directory before reporting failure without spawning a child.
