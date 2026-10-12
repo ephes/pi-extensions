@@ -55,6 +55,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "entities": "^8.1.0",
     "undici": "^7.30.0"
   }
 }

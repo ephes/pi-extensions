@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Decode HTML entities in one pass with a maintained runtime decoder, preserving escaped literals and supporting named and numeric Unicode references in page titles and bodies
+
 - Fix agent workflow cancellation escalation and listener/timer cleanup; fail signal-terminated or missing-exit-code runs and stop incomplete chain handoffs
 
 - Bound web fetches to a 30-second total deadline across DNS, redirects and response bodies, with immediate caller cancellation and stream cleanup
