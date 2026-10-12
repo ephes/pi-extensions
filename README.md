@@ -123,3 +123,4 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
 - Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts.
+- Agent workflow cancellation sends SIGTERM, escalates to SIGKILL after five seconds if the child has not closed, and waits for close before cleanup. Signal termination or a missing exit code fails the run and stops chained handoffs; partial output is not treated as success.

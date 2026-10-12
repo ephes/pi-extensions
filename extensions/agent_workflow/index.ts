@@ -333,6 +333,27 @@ async function runSingleAgent(
         stdio: ["ignore", "pipe", "pipe"],
       });
       let buffer = "";
+      let settled = false;
+      let closed = false;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      const cleanup = () => {
+        if (killTimer) clearTimeout(killTimer);
+        signal?.removeEventListener("abort", killProc);
+      };
+      const finish = (code: number) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(code);
+      };
+      const killProc = () => {
+        if (settled || closed) return;
+        aborted = true;
+        proc.kill("SIGTERM");
+        killTimer = setTimeout(() => {
+          if (!closed) proc.kill("SIGKILL");
+        }, 5000);
+      };
 
       const processLine = (line: string) => {
         if (!line.trim()) return;
@@ -388,30 +409,25 @@ async function runSingleAgent(
         currentResult.stderr += chunk.toString();
       });
 
-      proc.on("close", (code) => {
+      proc.on("close", (code, closeSignal) => {
+        closed = true;
         if (buffer.trim()) processLine(buffer);
-        resolve(code ?? 0);
-      });
-
-      proc.on("error", () => {
-        resolve(1);
-      });
-
-      if (signal) {
-        const killProc = () => {
-          aborted = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
-          }, 5000);
-        };
-
-        if (signal.aborted) {
-          killProc();
-        } else {
-          signal.addEventListener("abort", killProc, { once: true });
+        if (closeSignal) {
+          currentResult.errorMessage = `Agent subprocess terminated by ${closeSignal}. Output may be incomplete.`;
+        } else if (code === null) {
+          currentResult.errorMessage = "Agent subprocess closed without an exit code. Output may be incomplete.";
         }
-      }
+        finish(closeSignal ? 1 : (code ?? 1));
+      });
+
+      proc.on("error", (error) => {
+        currentResult.errorMessage = error.message;
+        // Spawn failures have no child to reap; running children still settle on close.
+        if (proc.pid === undefined) finish(1);
+      });
+
+      if (signal?.aborted) killProc();
+      else signal?.addEventListener("abort", killProc, { once: true });
     });
 
     currentResult.exitCode = exitCode;
