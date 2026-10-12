@@ -10,6 +10,10 @@ import { Type } from "@sinclair/typebox";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
 import { resolveAgentModel, type ModelRef } from "./model_resolution.js";
 
+const MAX_PROTOCOL_LINE_BYTES = 1024 * 1024;
+const MAX_STDERR_BYTES = 64 * 1024;
+const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
+const MAX_MESSAGES = 256;
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
@@ -220,7 +224,18 @@ function writePromptToTempFile(agentName: string, prompt: string): { dir: string
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-workflow-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tempDir, `prompt-${safeName}.md`);
-  fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+  try {
+    fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+  } catch (error) {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw new Error("Unable to create agent prompt file or remove its temporary directory.", {
+        cause: new AggregateError([error, cleanupError]),
+      });
+    }
+    throw new Error("Unable to create agent prompt file.", { cause: error });
+  }
   return { dir: tempDir, filePath };
 }
 
@@ -333,6 +348,26 @@ async function runSingleAgent(
         stdio: ["ignore", "pipe", "pipe"],
       });
       let buffer = "";
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      let protocolError = false;
+      let stderrTail = Buffer.alloc(0);
+      let lineBytes = 0;
+      let messageBytes = 0;
+      const messageSizes: number[] = [];
+      const warnOnce = (warning: string) => {
+        if (!currentResult.warnings.includes(warning)) currentResult.warnings.push(warning);
+      };
+      const retainMessage = (message: Message) => {
+        const size = Buffer.byteLength(JSON.stringify(message));
+        currentResult.messages.push(message);
+        messageSizes.push(size);
+        messageBytes += size;
+        while (messageBytes > MAX_MESSAGE_BYTES || currentResult.messages.length > MAX_MESSAGES) {
+          messageBytes -= messageSizes.shift()!;
+          currentResult.messages.shift();
+          warnOnce("Earlier agent message details truncated (4 MiB / 256 messages).");
+        }
+      };
       let settled = false;
       let closed = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -346,13 +381,24 @@ async function runSingleAgent(
         cleanup();
         resolve(code);
       };
-      const killProc = () => {
-        if (settled || closed) return;
-        aborted = true;
+      const terminate = () => {
+        if (settled || closed || killTimer) return;
         proc.kill("SIGTERM");
         killTimer = setTimeout(() => {
           if (!closed) proc.kill("SIGKILL");
         }, 5000);
+      };
+
+      const killProc = () => {
+        aborted = true;
+        terminate();
+      };
+      const failProtocol = (message: string) => {
+        if (protocolError) return;
+        protocolError = true;
+        buffer = "";
+        currentResult.errorMessage = message;
+        terminate();
       };
 
       const processLine = (line: string) => {
@@ -373,7 +419,7 @@ async function runSingleAgent(
 
         if (maybeEvent.type === "message_end" && maybeEvent.message) {
           const message = maybeEvent.message;
-          currentResult.messages.push(message);
+          retainMessage(message);
           if (message.role === "assistant") {
             currentResult.usage.turns += 1;
             const usage = message.usage;
@@ -393,31 +439,72 @@ async function runSingleAgent(
         }
 
         if (maybeEvent.type === "tool_result_end" && maybeEvent.message) {
-          currentResult.messages.push(maybeEvent.message);
+          retainMessage(maybeEvent.message);
           emitUpdate();
         }
       };
 
       proc.stdout.on("data", (chunk) => {
-        buffer += chunk.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) processLine(line);
+        if (protocolError) return;
+        const bytes: Buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        let offset = 0;
+        while (offset < bytes.length) {
+          const newline = bytes.indexOf(10, offset);
+          const end = newline === -1 ? bytes.length : newline;
+          lineBytes += end - offset;
+          if (lineBytes > MAX_PROTOCOL_LINE_BYTES) {
+            failProtocol("Agent protocol line exceeds 1 MiB.");
+            return;
+          }
+          try {
+            buffer += decoder.decode(bytes.subarray(offset, end), { stream: newline === -1 });
+          } catch {
+            failProtocol("Agent protocol contains invalid UTF-8.");
+            return;
+          }
+          if (newline !== -1) {
+            processLine(buffer);
+            buffer = "";
+            lineBytes = 0;
+          }
+          offset = end + 1;
+        }
       });
 
       proc.stderr.on("data", (chunk) => {
-        currentResult.stderr += chunk.toString();
+        const bytes: Buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        const totalBytes = stderrTail.length + bytes.length;
+        stderrTail = bytes.length >= MAX_STDERR_BYTES
+          ? Buffer.from(bytes.subarray(bytes.length - MAX_STDERR_BYTES))
+          : Buffer.concat([stderrTail.subarray(Math.max(0, stderrTail.length - (MAX_STDERR_BYTES - bytes.length))), bytes]);
+        if (totalBytes > MAX_STDERR_BYTES) warnOnce("Agent stderr truncated to its last 64 KiB.");
+
       });
 
       proc.on("close", (code, closeSignal) => {
         closed = true;
-        if (buffer.trim()) processLine(buffer);
-        if (closeSignal) {
-          currentResult.errorMessage = `Agent subprocess terminated by ${closeSignal}. Output may be incomplete.`;
-        } else if (code === null) {
-          currentResult.errorMessage = "Agent subprocess closed without an exit code. Output may be incomplete.";
+        let start = 0;
+        while (start < stderrTail.length && (stderrTail[start] & 0xc0) === 0x80) start += 1;
+        currentResult.stderr = stderrTail.subarray(start).toString("utf8");
+        // Replacement characters for malformed bytes must also fit the rendered budget.
+        const encodedStderr = Buffer.from(currentResult.stderr);
+        if (encodedStderr.length > MAX_STDERR_BYTES) {
+          let offset = encodedStderr.length - MAX_STDERR_BYTES;
+          while ((encodedStderr[offset] & 0xc0) === 0x80) offset += 1;
+          currentResult.stderr = encodedStderr.subarray(offset).toString("utf8");
+          warnOnce("Agent stderr truncated to its last 64 KiB.");
         }
-        finish(closeSignal ? 1 : (code ?? 1));
+        if (!protocolError) {
+          try { buffer += decoder.decode(); }
+          catch { failProtocol("Agent protocol contains incomplete UTF-8."); }
+          if (!protocolError && buffer.trim()) processLine(buffer);
+        }
+        if (closeSignal) {
+          currentResult.errorMessage = `${currentResult.errorMessage ? currentResult.errorMessage + " " : ""}Agent subprocess terminated by ${closeSignal}. Output may be incomplete.`;
+        } else if (code === null) {
+          currentResult.errorMessage = `${currentResult.errorMessage ? currentResult.errorMessage + " " : ""}Agent subprocess closed without an exit code. Output may be incomplete.`;
+        }
+        finish(protocolError || closeSignal ? 1 : (code ?? 1));
       });
 
       proc.on("error", (error) => {

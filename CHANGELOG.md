@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve split UTF-8 agent protocol characters and fail malformed or incomplete UTF-8
+- Remove owned temporary prompt directories after failed writes, including partial files
+- Bound agent protocol lines to 1 MiB, stderr tails to 64 KiB, and recent message details to 4 MiB / 256 entries; report truncation and reap children on protocol overflow
+
 - Validate Kagi response envelopes, result and related-search fields while retaining extra fields and nullable optional scalars
 - Limit Kagi success and error response bodies to 1 MiB of streamed bytes
 - Apply a 30-second total Kagi search deadline with immediate caller cancellation and stream/timer cleanup, controlled error names and API-key redaction in HTTP diagnostics
