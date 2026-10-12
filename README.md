@@ -119,6 +119,7 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - The package manifest registers extensions via the conventional `./extensions` directory so installed Pi sessions discover all bundled tools end to end.
 - If it grows substantially, it can later be split into multiple packages inside the same repo.
 - `web_content` validates and pins DNS answers for each redirect target (including IPv4/IPv6 fallback), preserves the original Host/TLS name, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
+- `web_content` decodes HTML entities once in extracted titles and body text, including named and numeric Unicode references. Escaped literals such as `&amp;lt;` remain `&lt;`; malformed references follow HTML decoding rules.
 - `web_content` has one 30-second total deadline covering DNS, redirects, headers, and body consumption. Timeout errors invite a retry; caller cancellation remains immediate.
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.

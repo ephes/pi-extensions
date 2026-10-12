@@ -7,7 +7,7 @@ Keep this file short and actionable.
 - [ ] Add integration tests for the `agent_workflow` extension, especially chained workflow behavior, model fallback, and subprocess error handling.
 - [ ] Add more unit tests for redirect handling, fetch-size limiting, and Kagi response formatting.
 - [ ] Align `kagi_search` limit handling between `extensions/kagi_search.ts` and `shared/kagi.ts`.
-- [ ] Improve HTML entity decoding and evaluate a more robust readability/extraction approach.
+- [ ] Evaluate a more robust readability/extraction approach.
 - [ ] Deduplicate shared constants such as the user agent string.
 
 ## Later

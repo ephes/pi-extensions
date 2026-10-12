@@ -1,6 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { decodeHtml, extractReadableText, isBlockedIp, validateUrl } from "../shared/web.js";
+import { decodeHtml, extractTitle, extractReadableText, isBlockedIp, validateUrl } from "../shared/web.js";
 
 test("isBlockedIp blocks private, loopback, and mapped IPv4 ranges", () => {
   const blocked = [
@@ -263,4 +263,20 @@ test("HTTPS retains the original TLS server name with a pinned resolver", async 
   });
   await assert.rejects(fetchReadablePage("https://public.example/"), (error: unknown) => error instanceof Error && error.cause === stop);
   assert.equal(connected, true);
+});
+
+test("HTML entities decode once in title and body extraction", () => {
+  const encoded = "&amp;lt; &#x1F600; &#169; &copy; &euro; &NotEqualTilde; &nbsp; &lt;code&gt;";
+  const expected = "&lt; 😀 © © € ≂̸ <code>";
+  assert.equal(extractTitle(`<title>${encoded}</title>`), expected);
+  assert.equal(extractReadableText(`<p>${encoded}</p>`), expected);
+  assert.equal(decodeHtml("&amp;lt; &amp;#169;"), "&lt; &#169;");
+});
+
+test("malformed HTML references remain safe", () => {
+  const malformed = "&unknown; &#xZZ; &#; &";
+  assert.equal(decodeHtml(malformed), malformed);
+  assert.equal(extractTitle(`<title>${malformed}</title>`), malformed);
+  assert.equal(extractReadableText(`<p>${malformed}</p>`), malformed);
+  assert.equal(decodeHtml("&#x110000; &#xD800; &#0;"), "� � �");
 });

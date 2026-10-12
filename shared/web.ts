@@ -1,4 +1,5 @@
 import dns from "node:dns/promises";
+import { decodeHTML } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
 import { Agent, fetch, type Response } from "undici";
@@ -222,13 +223,7 @@ export function extractReadableText(html: string): string {
 }
 
 export function decodeHtml(value: string): string {
-  return value
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  return decodeHTML(value).replace(/\u00a0/g, " ");
 }
 
 function cleanLine(value: string): string {
