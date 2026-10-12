@@ -6,7 +6,11 @@ A monorepo of Pi extensions that adds reusable tools for search, web access, and
 
 ### Local path
 
+Use Node 22 or newer. Install runtime dependencies in the checkout before registering it with Pi; local-path installation does not install them automatically.
+
 ```bash
+cd <path-to-pi-extensions>
+npm install --omit=dev
 pi install <path-to-pi-extensions>
 ```
 
@@ -114,7 +118,8 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - This repository starts as a single Pi package with multiple extension files.
 - The package manifest registers extensions via the conventional `./extensions` directory so installed Pi sessions discover all bundled tools end to end.
 - If it grows substantially, it can later be split into multiple packages inside the same repo.
-- `web_content` validates redirect targets, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
+- `web_content` validates and pins DNS answers for each redirect target (including IPv4/IPv6 fallback), preserves the original Host/TLS name, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
+- `web_content` has one 30-second total deadline covering DNS, redirects, headers, and body consumption. Timeout errors invite a retry; caller cancellation remains immediate.
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
 - Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts.

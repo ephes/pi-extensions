@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound web fetches to a 30-second total deadline across DNS, redirects and response bodies, with immediate caller cancellation and stream cleanup
+
+- Pin validated web-fetch DNS addresses to each connection and redirect, preserving Host/TLS names and blocking private-address fallback; add Undici as a runtime dependency and document the required dependency install for local-path usage
+
 - Add a GitHub Actions CI workflow (Node 22, `npm ci`, `npm run check`) with SHA-pinned actions, npm caching and read-only permissions
 - Refresh vulnerable transitive dev dependencies in `package-lock.json` (clears the critical `protobufjs` advisory); the remaining advisories need a breaking `@mariozechner/pi-*` upgrade
 - Rename the workflow tool from `subagent` to `agent_workflow` to reduce collisions and better match its orchestration role
