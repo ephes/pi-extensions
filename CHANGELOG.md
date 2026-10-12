@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Validate Kagi response envelopes, result and related-search fields while retaining extra fields and nullable optional scalars
+- Limit Kagi success and error response bodies to 1 MiB of streamed bytes
+- Apply a 30-second total Kagi search deadline with immediate caller cancellation and stream/timer cleanup, controlled error names and API-key redaction in HTTP diagnostics
+
 - Canonicalize IPv6 addresses before web-fetch classification, blocking expanded loopback and equivalent private mapped forms in both literals and DNS answers
 
 - Decode HTML entities in one pass with a maintained runtime decoder, preserving escaped literals and supporting named and numeric Unicode references in page titles and bodies
