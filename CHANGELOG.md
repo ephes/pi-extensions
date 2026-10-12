@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix agent workflow cancellation escalation and listener/timer cleanup; fail signal-terminated or missing-exit-code runs and stop incomplete chain handoffs
+
 - Bound web fetches to a 30-second total deadline across DNS, redirects and response bodies, with immediate caller cancellation and stream cleanup
 
 - Pin validated web-fetch DNS addresses to each connection and redirect, preserving Host/TLS names and blocking private-address fallback; add Undici as a runtime dependency and document the required dependency install for local-path usage
