@@ -21,11 +21,12 @@ function setup(t: TestContext) {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  type StubTool = { execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<{ isError?: boolean; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; usage: { turns: number } }> } }> };
+  type StubTool = { execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<{ isError?: boolean; content: unknown; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; stopReason?: string; exitCode: number; task: string; usage: { turns: number } }> } }> };
   let tool: StubTool;
   extension({ registerTool(definition: StubTool) { tool = definition; } } as unknown as ExtensionAPI);
-  const execute = (signal?: AbortSignal, chain = false, task = "{previous}") => tool.execute("test", chain
+  const execute = (signal?: AbortSignal, chain = false, task = "{previous}", parallel = false) => tool.execute("test", chain
     ? { chain: [{ agent: "implementer", task: "first" }, { agent: "reviewer", task }] }
+    : parallel ? { tasks: Array.from({ length: 8 }, (_, i) => ({ agent: "implementer", task: `task-${i}` })) }
     : { agent: "implementer", task: "test" }, signal, undefined, {
       cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
     } as never);
@@ -356,4 +357,74 @@ test("aborting a chain stops before the next subprocess", async (t) => {
   children[0].emit("close", null, "SIGTERM");
   await rejected;
   assert.equal(children.length, 1);
+});
+
+for (const preAborted of [false, true]) {
+  test(`parallel cancellation skips queued prompts and returns every result (preAborted=${preAborted})`, async (t) => {
+    const { children, execute } = setup(t);
+    const mkdir = t.mock.method(fs, "mkdtempSync");
+    syncBuiltinESMExports();
+    const controller = new AbortController();
+    if (preAborted) controller.abort();
+    const run = execute(controller.signal, false, "", true);
+    // Attach a rejection handler before settling children on the unfixed implementation.
+    void run.catch(() => {});
+    assert.equal(children.length, preAborted ? 0 : 4);
+    if (!preAborted) {
+      controller.abort();
+      for (const child of children.slice()) child.emit("close", null, "SIGTERM");
+    }
+    const result = await run;
+    assert.equal(children.length, preAborted ? 0 : 4);
+    assert.equal(mkdir.mock.callCount(), preAborted ? 0 : 4);
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /Parallel: 0\/8 succeeded/);
+    assert.equal(result.details.results.length, 8);
+    for (const [i, item] of result.details.results.entries()) {
+      assert.equal(item.task, `task-${i}`);
+      assert.equal(item.stopReason, "aborted");
+      assert.notEqual(item.exitCode, 0);
+    }
+  });
+}
+
+test("pre-aborted single run creates no prompt or child", async (t) => {
+  const { children, execute } = setup(t);
+  const mkdir = t.mock.method(fs, "mkdtempSync");
+  syncBuiltinESMExports();
+  const controller = new AbortController();
+  controller.abort();
+  const run = execute(controller.signal);
+  void run.catch(() => {});
+  assert.equal(children.length, 0);
+  await assert.rejects(run, /aborted/);
+  assert.equal(mkdir.mock.callCount(), 0);
+});
+
+test("parallel cancellation preserves completed results in order", async (t) => {
+  const { children, execute } = setup(t);
+  const controller = new AbortController();
+  const run = execute(controller.signal, false, "", true);
+  children[0].emit("close", 0, null);
+  controller.abort();
+  for (const child of children.slice(1)) child.emit("close", null, "SIGTERM");
+  const result = await run;
+  assert.equal(children.length, 4);
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /Parallel: 1\/8 succeeded/);
+  assert.match(JSON.stringify(result.content), /Agent workflow was aborted\. Agent subprocess terminated by SIGTERM/);
+  assert.equal(result.details.results[0].exitCode, 0);
+  assert.deepEqual(result.details.results.slice(1).map((item) => item.stopReason), Array(7).fill("aborted"));
+  assert.deepEqual(result.details.results.map((item) => item.task), Array.from({ length: 8 }, (_, i) => `task-${i}`));
+});
+
+test("pre-aborted chain creates no prompt or child", async (t) => {
+  const { children, execute } = setup(t);
+  const mkdir = t.mock.method(fs, "mkdtempSync");
+  syncBuiltinESMExports();
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(execute(controller.signal, true), /aborted/);
+  assert.equal(children.length, 0);
+  assert.equal(mkdir.mock.callCount(), 0);
 });

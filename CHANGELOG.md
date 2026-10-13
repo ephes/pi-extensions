@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Skip queued parallel agents after cancellation and report every task as completed or aborted; check cancellation before prompt creation and spawning
+
 - Preserve literal prior output in every chained `{previous}` placeholder while retaining context truncation
 - Isolate malformed bundled agent definitions with filename-only warnings, validate frontmatter types, and exclude all definitions with duplicate names
 
