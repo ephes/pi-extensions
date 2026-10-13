@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Test the packed publish layout through Pi’s public resource loader with lockfile-installed development peers for unique tool registration and bundled assets, with offline guards and missing-file regression fixtures
+
 - Skip queued parallel agents after cancellation and report every task as completed or aborted; check cancellation before prompt creation and spawning
 
 - Preserve literal prior output in every chained `{previous}` placeholder while retaining context truncation
