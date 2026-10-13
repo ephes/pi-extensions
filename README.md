@@ -168,3 +168,8 @@ usage and assistant status fields may be absent. Malformed consumed messages
 fail the run with a bounded diagnostic and the same terminate-and-reap lifecycle
 as protocol overflow; unknown event types remain ignored. Unsupported message
 roles and block types in consumed envelopes fail closed. Extra metadata is retained.
+
+Final output uses the latest retained assistant message containing text blocks,
+joining every text block in order with a single newline, including empty blocks.
+Thinking and tool-call blocks are excluded. Single text blocks are unchanged;
+chain context truncation applies to the assembled answer.

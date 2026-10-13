@@ -205,9 +205,8 @@ function getFinalOutput(messages: Message[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") continue;
-    for (const part of message.content) {
-      if (part.type === "text") return part.text;
-    }
+    const text = message.content.filter((part) => part.type === "text");
+    if (text.length > 0) return text.map((part) => part.text).join("\n");
   }
   return "";
 }
