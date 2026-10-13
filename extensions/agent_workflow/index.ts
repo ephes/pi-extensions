@@ -202,6 +202,8 @@ async function mapWithConcurrencyLimit<TInput, TOutput>(
   items: TInput[],
   concurrency: number,
   fn: (item: TInput, index: number) => Promise<TOutput>,
+  signal: AbortSignal | undefined,
+  onAborted: (item: TInput) => TOutput,
 ): Promise<TOutput[]> {
   if (items.length === 0) return [];
   const limit = Math.max(1, Math.min(concurrency, items.length));
@@ -209,7 +211,7 @@ async function mapWithConcurrencyLimit<TInput, TOutput>(
   let nextIndex = 0;
 
   const workers = new Array(limit).fill(null).map(async () => {
-    while (true) {
+    while (!signal?.aborted) {
       const current = nextIndex;
       nextIndex += 1;
       if (current >= items.length) return;
@@ -218,7 +220,16 @@ async function mapWithConcurrencyLimit<TInput, TOutput>(
   });
 
   await Promise.all(workers);
+  for (let i = nextIndex; i < items.length; i++) results[i] = onAborted(items[i]);
   return results;
+}
+
+function abortedResult(agent: string, task: string, step?: number): SingleResult {
+  return {
+    agent, task, step, exitCode: 1, stopReason: "aborted",
+    errorMessage: "Agent workflow was aborted.", messages: [], stderr: "", warnings: [],
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  };
 }
 
 function writePromptToTempFile(agentName: string, prompt: string): { dir: string; filePath: string } {
@@ -264,7 +275,12 @@ async function runSingleAgent(
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (results: SingleResult[]) => AgentWorkflowDetails,
+  abortAsResult = false,
 ): Promise<SingleResult> {
+  if (signal?.aborted) {
+    if (abortAsResult) return abortedResult(agentName, task, step);
+    throw new Error("Agent workflow was aborted.");
+  }
   const agent = agents.find((candidate) => candidate.name === agentName);
 
   if (!agent) {
@@ -340,6 +356,11 @@ async function runSingleAgent(
       args.push("--append-system-prompt", tempPromptPath);
     }
 
+    // Defensive guard at the spawn boundary; prompt preparation is synchronous.
+    if (signal?.aborted) {
+      if (abortAsResult) return abortedResult(agentName, task, step);
+      throw new Error("Agent workflow was aborted.");
+    }
     args.push(`Task: ${task}`);
 
     const exitCode = await new Promise<number>((resolve) => {
@@ -519,7 +540,12 @@ async function runSingleAgent(
     });
 
     currentResult.exitCode = exitCode;
-    if (aborted) throw new Error("Agent workflow was aborted.");
+    if (aborted) {
+      if (!abortAsResult) throw new Error("Agent workflow was aborted.");
+      currentResult.exitCode = 1;
+      currentResult.stopReason = "aborted";
+      currentResult.errorMessage = `Agent workflow was aborted.${currentResult.errorMessage ? " " + currentResult.errorMessage : ""}`;
+    }
     return currentResult;
   } finally {
     if (tempPromptPath) {
@@ -699,11 +725,12 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
               emitParallelUpdate();
             },
             makeDetails("parallel"),
+            true,
           );
           allResults[index] = result;
           emitParallelUpdate();
           return result;
-        });
+        }, signal, (taskItem) => abortedResult(taskItem.agent, taskItem.task));
 
         const successCount = results.filter((result) => result.exitCode === 0).length;
         const summaries = results.map((result) => {
@@ -714,6 +741,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         });
 
         return {
+          isError: results.some((result) => result.stopReason === "aborted") || undefined,
           content: toolContent(`Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
           details: makeDetails("parallel")(results),
         };
