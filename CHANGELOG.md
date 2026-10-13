@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Validate consumed agent message envelopes, content blocks and supplied usage before retention; fail malformed messages and reap the child
+- Preserve every final assistant text block in output and chain handoffs, joining blocks with a newline
 
 - Test the packed publish layout through Pi’s public resource loader with lockfile-installed development peers for unique tool registration and bundled assets, with offline guards and missing-file regression fixtures
 

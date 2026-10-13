@@ -508,6 +508,28 @@ test("valid message variants and unknown events remain supported", async (t) => 
   assert.deepEqual(result.details.results[0].usage, { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.1, contextTokens: 14, turns: 1 });
 });
 
+for (const oversized of [false, true]) {
+  test(`all final text blocks reach output and capped chain handoff (oversized=${oversized})`, async (t) => {
+    const { children, execute, tasks } = setup(t);
+    const text = "first\nsecond" + (oversized ? "x".repeat(13000) : "");
+    const content = [{ type: "text", text: "first" }, { type: "thinking", thinking: "hidden" },
+      { type: "toolCall", id: "id", name: "read", arguments: {} },
+      { type: "text", text: text.slice(6) }];
+    const run = execute(undefined, true);
+    children[0].stdout.emit("data", messageLine("older answer"));
+    children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content } }) + "\n");
+    // Preserve the latest assistant with text selection when a later message has no text.
+    children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "hidden" }] } }) + "\n");
+    children[0].emit("close", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    children[1].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content } }) + "\n");
+    children[1].emit("close", 0, null);
+    const result = await run;
+    assert.deepEqual(result.content, [{ type: "text", text: "Warnings:\n- Requested model anthropic/claude-opus-4-6 is unavailable; falling back to openai/gpt-5.4.\n\n" + text }]);
+    const capped = oversized ? `[Previous agent workflow output truncated from ${text.length} to 12000 characters.]\n\n${text.slice(0, 12000)}` : text;
+    assert.equal(tasks[1], `Task: ${capped}`);
+  });
+}
 
 for (const type of ["message_end", "tool_result_end"]) {
   test(`malformed ${type} at EOF fails without retaining output`, async (t) => {
