@@ -92,6 +92,10 @@ just loc
 ```
 
 `just check` and `npm run check` both run lint, typecheck, and tests.
+The test suite packs and extracts the npm publish layout, then uses Pi’s public
+resource loader with the lockfile-installed development peers to check unique
+tool registration and bundled agent/prompt discovery offline. Negative fixtures
+verify that missing entry points, helpers, agents, and prompts fail the smoke check.
 
 Equivalent npm commands:
 
