@@ -46,6 +46,7 @@ interface SingleResult {
 interface AgentWorkflowDetails {
   mode: "single" | "parallel" | "chain";
   agentsDir: string;
+  diagnostics?: string[];
   results: SingleResult[];
 }
 
@@ -585,12 +586,17 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       const makeDetails = (mode: "single" | "parallel" | "chain") => (results: SingleResult[]): AgentWorkflowDetails => ({
         mode,
         agentsDir: discovery.agentsDir,
+        diagnostics: discovery.diagnostics,
         results,
       });
 
+      const toolContent = (text: string): ToolResult["content"] => [
+        { type: "text", text: combineTextWithWarnings(text, discovery.diagnostics) },
+      ];
+
       if (modeCount !== 1) {
         return {
-          content: [{ type: "text", text: `Invalid parameters. Available bundled agents: ${formatAgentList(agents)}` }],
+          content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
           details: makeDetails("single")([]),
         };
       }
@@ -601,7 +607,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
         for (let index = 0; index < params.chain.length; index += 1) {
           const step = params.chain[index];
-          const taskWithContext = step.task.replace(/\{previous\}/g, truncatePreviousOutput(previousOutput));
+          const context = truncatePreviousOutput(previousOutput);
+          const taskWithContext = step.task.replace(/\{previous\}/g, () => context);
           const chainUpdate: OnUpdateCallback | undefined = onUpdate
             ? (partial) => {
                 const current = partial.details?.results[0];
@@ -631,7 +638,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
           if (isError) {
             return {
-              content: [{ type: "text", text: `Chain stopped at step ${index + 1} (${step.agent}): ${getErrorText(result)}` }],
+              content: toolContent(`Chain stopped at step ${index + 1} (${step.agent}): ${getErrorText(result)}`),
               details: makeDetails("chain")(results),
               isError: true,
             };
@@ -641,7 +648,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         }
 
         return {
-          content: [{ type: "text", text: getSuccessText(results[results.length - 1]) }],
+          content: toolContent(getSuccessText(results[results.length - 1])),
           details: makeDetails("chain")(results),
         };
       }
@@ -649,7 +656,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       if (params.tasks && params.tasks.length > 0) {
         if (params.tasks.length > MAX_PARALLEL_TASKS) {
           return {
-            content: [{ type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
+            content: toolContent(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`),
             details: makeDetails("parallel")([]),
           };
         }
@@ -669,7 +676,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           const running = allResults.filter((result) => result.exitCode === -1).length;
           const done = allResults.filter((result) => result.exitCode !== -1).length;
           onUpdate({
-            content: [{ type: "text", text: `Parallel: ${done}/${allResults.length} done, ${running} running...` }],
+            content: toolContent(`Parallel: ${done}/${allResults.length} done, ${running} running...`),
             details: makeDetails("parallel")([...allResults]),
           });
         };
@@ -707,7 +714,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         });
 
         return {
-          content: [{ type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}` }],
+          content: toolContent(`Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
           details: makeDetails("parallel")(results),
         };
       }
@@ -729,19 +736,19 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
         if (isError) {
           return {
-            content: [{ type: "text", text: `Agent ${result.agent} failed: ${getErrorText(result)}` }],
+            content: toolContent(`Agent ${result.agent} failed: ${getErrorText(result)}`),
             details: makeDetails("single")([result]),
             isError: true,
           };
         }
         return {
-          content: [{ type: "text", text: getSuccessText(result) }],
+          content: toolContent(getSuccessText(result)),
           details: makeDetails("single")([result]),
         };
       }
 
       return {
-        content: [{ type: "text", text: `Invalid parameters. Available bundled agents: ${formatAgentList(agents)}` }],
+        content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
         details: makeDetails("single")([]),
       };
     },
@@ -784,6 +791,14 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         const first = result.content.find((item) => item.type === "text");
         return new Text(first?.text ?? "(no output)", 0, 0);
       }
+
+      const withDiagnostics = (component: Text | Container) => {
+        if (!details.diagnostics?.length) return component;
+        const container = new Container();
+        container.addChild(new Text(theme.fg("warning", formatWarningsBlock(details.diagnostics)), 0, 0));
+        container.addChild(component);
+        return container;
+      };
 
       const markdownTheme = getMarkdownTheme();
       const aggregateUsage = (results: SingleResult[]) => results.reduce(
@@ -847,7 +862,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             container.addChild(new Spacer(1));
             container.addChild(new Text(theme.fg("dim", usage), 0, 0));
           }
-          return container;
+          return withDiagnostics(container);
         }
 
         let text = `${icon} ${theme.fg("toolTitle", theme.bold(single.agent))}`;
@@ -860,7 +875,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         }
         const usage = formatUsageStats(single.usage, single.model);
         if (usage) text += `\n${theme.fg("dim", usage)}`;
-        return new Text(text, 0, 0);
+        return withDiagnostics(new Text(text, 0, 0));
       }
 
       if (details.mode === "chain") {
@@ -894,7 +909,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             container.addChild(new Spacer(1));
             container.addChild(new Text(theme.fg("dim", `Total: ${totalUsage}`), 0, 0));
           }
-          return container;
+          return withDiagnostics(container);
         }
 
         for (const entry of details.results) {
@@ -907,7 +922,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         const totalUsage = formatUsageStats(aggregateUsage(details.results));
         if (totalUsage) text += `\n\n${theme.fg("dim", `Total: ${totalUsage}`)}`;
         text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-        return new Text(text, 0, 0);
+        return withDiagnostics(new Text(text, 0, 0));
       }
 
       const running = details.results.filter((entry) => entry.exitCode === -1).length;
@@ -943,7 +958,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           container.addChild(new Spacer(1));
           container.addChild(new Text(theme.fg("dim", `Total: ${totalUsage}`), 0, 0));
         }
-        return container;
+        return withDiagnostics(container);
       }
 
       let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
@@ -959,7 +974,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         if (totalUsage) text += `\n\n${theme.fg("dim", `Total: ${totalUsage}`)}`;
       }
       if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-      return new Text(text, 0, 0);
+      return withDiagnostics(new Text(text, 0, 0));
     },
   });
 }

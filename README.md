@@ -39,6 +39,17 @@ Bundled prompt templates live in `prompts/` and are registered through the Pi pa
 - `/review` — review the current diff with the bundled reviewer
 - `/implement-and-review` — implement, review, then apply feedback in a chain
 
+Agent definitions use YAML frontmatter with required non-blank string `name` and
+`description` fields. Optional `tools` is a comma-separated string (for example,
+`read, bash`), and optional `model` is a string model ID. Omit optional fields
+instead of setting them to YAML lists, booleans, numbers, or null. The Markdown
+body supplies the system prompt; extra frontmatter fields are ignored. Invalid
+or unreadable definitions are skipped with filename-only warnings, and all
+otherwise valid definitions sharing an exact, case-sensitive name are excluded
+with filename-only warnings so no ambiguous agent can be invoked. Discovery
+warnings are included in each tool result and its display, without raw stderr
+writes.
+
 Bundled agent frontmatter prefers these model IDs:
 
 - `implementer` — `openai/gpt-5.4`
@@ -128,7 +139,7 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - `web_content` has one 30-second total deadline covering DNS, redirects, headers, and body consumption. Timeout errors invite a retry; caller cancellation remains immediate.
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
-- Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts.
+- Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts. Every placeholder receives the same literal prior output, including dollar syntax and any `{previous}` text in that output; inserted text is not expanded again.
 - Agent workflow cancellation sends SIGTERM, escalates to SIGKILL after five seconds if the child has not closed, and waits for close before cleanup. Signal termination or a missing exit code fails the run and stops chained handoffs; partial output is not treated as success.
 
 Agent workflow stdout uses streaming, strict UTF-8 decoding, including the final
