@@ -151,6 +151,56 @@ function formatToolCall(toolName: string, args: Record<string, unknown>, themeFg
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Validate the protocol fields consumed by output, display and usage accounting.
+// Additional provider metadata is deliberately left alone.
+function isConsumedMessage(value: unknown): value is Message {
+  if (!isRecord(value)) return false;
+  const { role, content } = value;
+  if (role !== "assistant" && role !== "user" && role !== "toolResult") return false;
+  if (role === "user" && typeof content === "string") return true;
+  if (!Array.isArray(content)) return false;
+  for (const part of content) {
+    if (!isRecord(part)) return false;
+    switch (part.type) {
+      case "text":
+        if (typeof part.text !== "string") return false;
+        break;
+      case "thinking":
+        if (role !== "assistant" || typeof part.thinking !== "string") return false;
+        break;
+      case "toolCall":
+        if (role !== "assistant" || typeof part.id !== "string" || typeof part.name !== "string" || !isRecord(part.arguments)) return false;
+        break;
+      case "image":
+        if (role === "assistant" || typeof part.data !== "string" || typeof part.mimeType !== "string") return false;
+        break;
+      default:
+        return false;
+    }
+  }
+  if (role === "assistant") {
+    if (value.model !== undefined && typeof value.model !== "string") return false;
+    if (value.errorMessage !== undefined && typeof value.errorMessage !== "string") return false;
+    if (value.stopReason !== undefined && !["stop", "length", "toolUse", "error", "aborted"].includes(value.stopReason as string)) return false;
+    if (value.usage !== undefined) {
+      const usage = value.usage;
+      const finiteNonnegative = (number: unknown) => typeof number === "number" && Number.isFinite(number) && number >= 0;
+      if (!isRecord(usage) || !isRecord(usage.cost)) return false;
+      for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"]) {
+        if (!finiteNonnegative(usage[field])) return false;
+      }
+      for (const field of ["input", "output", "cacheRead", "cacheWrite", "total"]) {
+        if (!finiteNonnegative(usage.cost[field])) return false;
+      }
+    }
+  }
+  return true;
+}
+
 function getFinalOutput(messages: Message[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -433,14 +483,15 @@ async function runSingleAgent(
           return;
         }
 
-        if (!event || typeof event !== "object") return;
-        const maybeEvent = event as {
-          type?: string;
-          message?: Message;
-        };
+        if (!isRecord(event)) return;
+        if (event.type !== "message_end" && event.type !== "tool_result_end") return;
+        if (!isConsumedMessage(event.message)) {
+          failProtocol("Agent protocol contains a malformed message.");
+          return;
+        }
+        const message = event.message;
 
-        if (maybeEvent.type === "message_end" && maybeEvent.message) {
-          const message = maybeEvent.message;
+        if (event.type === "message_end") {
           retainMessage(message);
           if (message.role === "assistant") {
             currentResult.usage.turns += 1;
@@ -460,8 +511,8 @@ async function runSingleAgent(
           emitUpdate();
         }
 
-        if (maybeEvent.type === "tool_result_end" && maybeEvent.message) {
-          retainMessage(maybeEvent.message);
+        if (event.type === "tool_result_end") {
+          retainMessage(message);
           emitUpdate();
         }
       };
@@ -486,6 +537,7 @@ async function runSingleAgent(
           }
           if (newline !== -1) {
             processLine(buffer);
+            if (protocolError) return;
             buffer = "";
             lineBytes = 0;
           }

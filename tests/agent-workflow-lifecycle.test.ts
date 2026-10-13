@@ -428,3 +428,98 @@ test("pre-aborted chain creates no prompt or child", async (t) => {
   assert.equal(children.length, 0);
   assert.equal(mkdir.mock.callCount(), 0);
 });
+
+const validUsage = {
+  input: 2, output: 3, cacheRead: 4, cacheWrite: 5, totalTokens: 14,
+  cost: { input: 0, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+};
+const invalidMessages: unknown[] = [
+  null, {}, { role: "alien", content: [] }, { role: "assistant", content: [], model: {} },
+  ...[null, {}, "text", [null], [{ type: "text", text: null }],
+    [{ type: "toolCall", id: "id", name: "bash", arguments: null }],
+    [{ type: "toolCall", id: "id", name: 1, arguments: {} }],
+    [{ type: "thinking", thinking: 1 }], [{ type: "unknown" }],
+  ].map((content) => ({ role: "assistant", content })),
+  ...[null, [], { ...validUsage, input: "2" }, { ...validUsage, output: -1 },
+    { ...validUsage, totalTokens: Number.POSITIVE_INFINITY }, { ...validUsage, cost: null },
+    { ...validUsage, cost: { ...validUsage.cost, total: "0.1" } },
+  ].map((usage) => ({ role: "assistant", content: [], usage })),
+  { role: "assistant", content: [], stopReason: {} },
+  { role: "assistant", content: [], errorMessage: {} },
+  { role: "user", content: null },
+  ...["user", "toolResult"].flatMap((role) => [
+    { role, content: [{ type: "thinking", thinking: "reason" }] },
+    { role, content: [{ type: "toolCall", id: "id", name: "bash", arguments: {} }] },
+  ]),
+  { role: "assistant", content: [{ type: "image", data: "AA==", mimeType: "image/png" }] },
+  { role: "toolResult", content: [{ type: "image", data: null, mimeType: "image/png" }] },
+];
+for (const type of ["message_end", "tool_result_end"]) {
+  for (const [index, message] of invalidMessages.entries()) {
+    test(`malformed ${type} message ${index} fails before retention and waits for close`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const { children, execute } = setup(t);
+      const run = execute(undefined, true);
+      let settled = false;
+      void run.then(() => { settled = true; });
+      const child = children[0];
+      try {
+        assert.doesNotThrow(() => child.stdout.emit("data", JSON.stringify({ type, message }) + "\n" + messageLine("ignored").toString()));
+        assert.deepEqual(child.signals, ["SIGTERM"]);
+        // Later events in the same stream must not be retained after rejection.
+        child.stdout.emit("data", messageLine("ignored"));
+        t.mock.timers.tick(5000);
+        assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(settled, false);
+      } finally {
+        child.emit("close", 0, null);
+      }
+      const result = await run;
+      assert.equal(result.isError, true);
+      assert.deepEqual(result.details.results[0].messages, []);
+      assert.equal(result.details.results[0].usage.turns, 0);
+      assert.match(JSON.stringify(result.content), /malformed message/);
+      assert.equal(children.length, 1);
+    });
+  }
+}
+
+test("valid message variants and unknown events remain supported", async (t) => {
+  const { children, execute } = setup(t);
+  const messages = [
+    { role: "user", content: "task" },
+    { role: "user", content: [{ type: "image", data: "AA==", mimeType: "image/png" }] },
+    { role: "assistant", content: [{ type: "thinking", thinking: "reason" },
+      { type: "toolCall", id: "id", name: "bash", arguments: { command: "pwd" } },
+      { type: "text", text: "answer" }], usage: validUsage, stopReason: "stop" },
+    { role: "toolResult", content: [{ type: "text", text: "done" }], toolCallId: "id", toolName: "bash", isError: false },
+  ];
+  const run = execute();
+  for (const message of messages) {
+    const type = message.role === "toolResult" ? "tool_result_end" : "message_end";
+    children[0].stdout.emit("data", JSON.stringify({ type, message }) + "\n");
+  }
+  children[0].stdout.emit("data", '{"type":"future_event","message":null}\n');
+  children[0].emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.details.results[0].messages, messages);
+  assert.deepEqual(result.details.results[0].usage, { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.1, contextTokens: 14, turns: 1 });
+});
+
+
+for (const type of ["message_end", "tool_result_end"]) {
+  test(`malformed ${type} at EOF fails without retaining output`, async (t) => {
+    const { children, execute } = setup(t);
+    const run = execute();
+    children[0].stdout.emit("data", JSON.stringify({ type, message: { role: "assistant", content: null } }));
+    children[0].emit("close", 0, null);
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.deepEqual(result.details.results[0].messages, []);
+    assert.match(JSON.stringify(result.content), /malformed message/);
+    // EOF arrives on close, so there is no running child left to terminate.
+    assert.deepEqual(children[0].signals, []);
+  });
+}
