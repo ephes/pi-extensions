@@ -15,22 +15,24 @@ export interface AgentConfig {
 export interface AgentDiscoveryResult {
   agents: AgentConfig[];
   agentsDir: string;
+  diagnostics: string[];
 }
 
 const AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../agents");
 
 export function discoverBundledAgents(): AgentDiscoveryResult {
   const agents: AgentConfig[] = [];
+  const diagnostics: string[] = [];
 
   if (!fs.existsSync(AGENTS_DIR)) {
-    return { agents, agentsDir: AGENTS_DIR };
+    return { agents, agentsDir: AGENTS_DIR, diagnostics };
   }
 
   let entries: fs.Dirent[] = [];
   try {
     entries = fs.readdirSync(AGENTS_DIR, { withFileTypes: true });
   } catch {
-    return { agents, agentsDir: AGENTS_DIR };
+    return { agents, agentsDir: AGENTS_DIR, diagnostics };
   }
 
   for (const entry of entries) {
@@ -38,33 +40,48 @@ export function discoverBundledAgents(): AgentDiscoveryResult {
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
 
     const filePath = path.join(AGENTS_DIR, entry.name);
-    let content = "";
     try {
-      content = fs.readFileSync(filePath, "utf-8");
+      const content = fs.readFileSync(filePath, "utf-8");
+      const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+      if (
+        typeof frontmatter.name !== "string" || !frontmatter.name.trim() ||
+        typeof frontmatter.description !== "string" || !frontmatter.description.trim() ||
+        (frontmatter.tools !== undefined && typeof frontmatter.tools !== "string") ||
+        (frontmatter.model !== undefined && typeof frontmatter.model !== "string")
+      ) {
+        diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
+        continue;
+      }
+
+      const tools = (frontmatter.tools as string | undefined)
+        ?.split(",")
+        .map((tool) => tool.trim())
+        .filter(Boolean);
+
+      agents.push({
+        name: frontmatter.name,
+        description: frontmatter.description,
+        tools: tools && tools.length > 0 ? tools : undefined,
+        model: frontmatter.model as string | undefined,
+        systemPrompt: body.trim(),
+        filePath,
+      });
     } catch {
-      continue;
+      // Do not expose parser errors, file paths, or definition contents.
+      diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
     }
-
-    const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
-    if (!frontmatter.name || !frontmatter.description) continue;
-
-    const tools = frontmatter.tools
-      ?.split(",")
-      .map((tool) => tool.trim())
-      .filter(Boolean);
-
-    agents.push({
-      name: frontmatter.name,
-      description: frontmatter.description,
-      tools: tools && tools.length > 0 ? tools : undefined,
-      model: frontmatter.model,
-      systemPrompt: body.trim(),
-      filePath,
-    });
   }
 
-  agents.sort((left, right) => left.name.localeCompare(right.name));
-  return { agents, agentsDir: AGENTS_DIR };
+  const counts = new Map<string, number>();
+  for (const agent of agents) counts.set(agent.name, (counts.get(agent.name) ?? 0) + 1);
+  const uniqueAgents = agents.filter((agent) => {
+    if (counts.get(agent.name) === 1) return true;
+    diagnostics.push(`Duplicate bundled agent definition: ${path.basename(agent.filePath)}`);
+    return false;
+  });
+
+  uniqueAgents.sort((left, right) => left.name.localeCompare(right.name));
+  return { agents: uniqueAgents, agentsDir: AGENTS_DIR, diagnostics };
 }
 
 export function formatAgentList(agents: AgentConfig[]): string {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve literal prior output in every chained `{previous}` placeholder while retaining context truncation
+- Isolate malformed bundled agent definitions with filename-only warnings, validate frontmatter types, and exclude all definitions with duplicate names
+
 - Preserve split UTF-8 agent protocol characters and fail malformed or incomplete UTF-8
 - Remove owned temporary prompt directories after failed writes, including partial files
 - Bound agent protocol lines to 1 MiB, stderr tails to 64 KiB, and recent message details to 4 MiB / 256 entries; report truncation and reap children on protocol overflow

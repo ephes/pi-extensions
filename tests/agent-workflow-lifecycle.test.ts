@@ -8,8 +8,10 @@ import extension from "../extensions/agent_workflow/index.js";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 function setup(t: TestContext) {
+  const tasks: string[] = [];
   const children: Array<EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; killed: boolean; signals: string[]; kill: (signal: string) => boolean }> = [];
-  t.mock.method(childProcess, "spawn", () => {
+  t.mock.method(childProcess, "spawn", (_command: string, args: string[]) => {
+    tasks.push(args.at(-1)!);
     const child = Object.assign(new EventEmitter(), {
       stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false, signals: [] as string[],
       kill(signal: string) { this.killed = true; this.signals.push(signal); return true; },
@@ -22,12 +24,12 @@ function setup(t: TestContext) {
   type StubTool = { execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<{ isError?: boolean; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; usage: { turns: number } }> } }> };
   let tool: StubTool;
   extension({ registerTool(definition: StubTool) { tool = definition; } } as unknown as ExtensionAPI);
-  const execute = (signal?: AbortSignal, chain = false) => tool.execute("test", chain
-    ? { chain: [{ agent: "implementer", task: "first" }, { agent: "reviewer", task: "{previous}" }] }
+  const execute = (signal?: AbortSignal, chain = false, task = "{previous}") => tool.execute("test", chain
+    ? { chain: [{ agent: "implementer", task: "first" }, { agent: "reviewer", task }] }
     : { agent: "implementer", task: "test" }, signal, undefined, {
       cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
     } as never);
-  return { children, execute };
+  return { children, execute, tasks };
 }
 
 test("abort escalates an unclosed child despite killed=true and waits for close", async (t) => {
@@ -323,4 +325,35 @@ test("prompt write and cleanup failures preserve both causes without spawning", 
   } finally {
     originalRemove(directory, { recursive: true, force: true });
   }
+});
+
+for (const oversized of [false, true]) {
+  test(`chain inserts literal previous output with repeated placeholders (oversized=${oversized})`, async (t) => {
+    const { children, execute, tasks } = setup(t);
+    const literal = "$& $` $' $$ {previous}";
+    const previous = literal + (oversized ? "x".repeat(13000) : "");
+    const run = execute(undefined, true, "prefix {previous} middle {previous} suffix");
+    children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: {
+      role: "assistant", content: [{ type: "text", text: previous }], stopReason: "stop",
+    } }) + "\n");
+    children[0].emit("close", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    children[1].emit("close", 0, null);
+    const result = await run;
+    assert.equal(Boolean(result.isError), false);
+    const handedOff = oversized
+      ? "[Previous agent workflow output truncated from " + previous.length + " to 12000 characters.]\n\n" + previous.slice(0, 12000)
+      : previous;
+    assert.equal(tasks[1], `Task: prefix ${handedOff} middle ${handedOff} suffix`);
+  });
+}
+
+test("aborting a chain stops before the next subprocess", async (t) => {
+  const { children, execute } = setup(t);
+  const controller = new AbortController();
+  const rejected = assert.rejects(execute(controller.signal, true), /aborted/);
+  controller.abort();
+  children[0].emit("close", null, "SIGTERM");
+  await rejected;
+  assert.equal(children.length, 1);
 });
