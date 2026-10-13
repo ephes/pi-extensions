@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate consumed agent message envelopes, content blocks and supplied usage before retention; fail malformed messages and reap the child
+
 - Test the packed publish layout through Pi’s public resource loader with lockfile-installed development peers for unique tool registration and bundled assets, with offline guards and missing-file regression fixtures
 
 - Skip queued parallel agents after cancellation and report every task as completed or aborted; check cancellation before prompt creation and spawning

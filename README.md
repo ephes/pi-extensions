@@ -159,3 +159,12 @@ messages, with truncation warnings; usage totals still include evicted messages.
 Final output and chain handoffs use the retained messages. Prompt files have
 owner-only permissions, and failed prompt writes remove their owned temporary
 directory before reporting failure without spawning a child.
+
+Consumed `message_end` and `tool_result_end` envelopes must carry a user,
+assistant, or tool-result message with role-appropriate content blocks. Text,
+thinking, image, and tool-call fields are validated before retention; supplied
+assistant usage must contain finite, nonnegative token and cost values. Optional
+usage and assistant status fields may be absent. Malformed consumed messages
+fail the run with a bounded diagnostic and the same terminate-and-reap lifecycle
+as protocol overflow; unknown event types remain ignored. Unsupported message
+roles and block types in consumed envelopes fail closed. Extra metadata is retained.

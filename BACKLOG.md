@@ -4,7 +4,7 @@ Keep this file short and actionable.
 
 ## Next
 
-- [ ] Add integration tests for the `agent_workflow` extension, especially chained workflow behavior, model fallback, and subprocess error handling.
+- [ ] Add offline `agent_workflow` tests for parallel-mode protocol failures and rendered tool output.
 - [ ] Add more unit tests for redirect handling, fetch-size limiting, and Kagi response formatting.
 - [ ] Align `kagi_search` limit handling between `extensions/kagi_search.ts` and `shared/kagi.ts`.
 - [ ] Evaluate a more robust readability/extraction approach.
