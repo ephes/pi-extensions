@@ -1,6 +1,8 @@
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { formatPublishedDate, searchKagi, KAGI_RESPONSE_MAX_BYTES, KAGI_SEARCH_TIMEOUT_MS } from "../shared/kagi.js";
+import { formatPublishedDate, normalizeKagiLimit, searchKagi, KAGI_RESPONSE_MAX_BYTES, KAGI_SEARCH_TIMEOUT_MS } from "../shared/kagi.js";
+import { USER_AGENT } from "../shared/http.js";
+import kagiSearchExtension from "../extensions/kagi_search.js";
 
 test("formatPublishedDate normalizes unix timestamps", () => {
   assert.equal(formatPublishedDate(1735689600), "2025-01-01");
@@ -122,4 +124,31 @@ test("searchKagi controls invalid JSON and redacts key from HTTP diagnostics", a
   status = 401;
   body = "upstream echoed test-key";
   await assert.rejects(searchKagi("query"), { message: "Kagi API request failed with HTTP 401: upstream echoed [redacted]" });
+});
+
+test("normalizeKagiLimit rounds, then clamps to 1-20, defaulting non-finite values", () => {
+  const cases: Array<[number | undefined, number]> = [
+    [undefined, 10], [Number.NaN, 10], [Number.POSITIVE_INFINITY, 10], [Number.NEGATIVE_INFINITY, 10],
+    [-5, 1], [0, 1], [0.4, 1], [1, 1], [1.4, 1], [1.5, 2], [19.5, 20], [20, 20], [20.5, 20], [21, 20], [100, 20], [101, 20],
+  ];
+  for (const [input, expected] of cases) assert.equal(normalizeKagiLimit(input), expected, `limit ${input}`);
+});
+
+test("searchKagi and the kagi_search tool send the normalized limit and the shared user agent", async (t) => {
+  const requests: Array<{ limit: string | null; userAgent: string | undefined }> = [];
+  t.mock.method(globalThis, "fetch", async (url: URL, options: { headers: Record<string, string> }) => {
+    requests.push({ limit: url.searchParams.get("limit"), userAgent: options.headers["User-Agent"] });
+    return Response.json(valid);
+  });
+  const inputs = [undefined, 0, 1.5, 21, 101];
+  for (const limit of inputs) await searchKagi("query", limit);
+
+  type ToolStub = { execute: (id: string, params: unknown, signal: undefined, update: undefined) => Promise<{ details: { limit?: number } }> };
+  let tool: ToolStub | undefined;
+  kagiSearchExtension({ registerTool(definition: ToolStub) { tool = definition; } } as never);
+  for (const limit of inputs) await tool!.execute("test", { query: "query", limit }, undefined, undefined);
+
+  const expected = ["10", "1", "2", "20", "20"];
+  assert.deepEqual(requests.map((request) => request.limit), [...expected, ...expected]);
+  assert.ok(requests.every((request) => request.userAgent === USER_AGENT));
 });

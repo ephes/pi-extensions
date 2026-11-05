@@ -21,7 +21,12 @@ function setup(t: TestContext) {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  type StubTool = { execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<{ isError?: boolean; content: unknown; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; stopReason?: string; exitCode: number; task: string; usage: { turns: number } }> } }> };
+  type StubResult = { isError?: boolean; content: Array<{ type: string; text?: string }>; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; stopReason?: string; errorMessage?: string; exitCode: number; agent: string; task: string; usage: { turns: number } }> } };
+  type StubComponent = { render: (width: number) => string[] };
+  type StubTool = {
+    execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<StubResult>;
+    renderResult: (result: StubResult, options: { expanded: boolean; isPartial: boolean }, theme: unknown) => StubComponent;
+  };
   let tool: StubTool;
   extension({ registerTool(definition: StubTool) { tool = definition; } } as unknown as ExtensionAPI);
   const execute = (signal?: AbortSignal, chain = false, task = "{previous}", parallel = false) => tool.execute("test", chain
@@ -30,7 +35,10 @@ function setup(t: TestContext) {
     : { agent: "implementer", task: "test" }, signal, undefined, {
       cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
     } as never);
-  return { children, execute, tasks };
+  const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+  const render = (result: StubResult, expanded: boolean) =>
+    tool.renderResult(result, { expanded, isPartial: false }, plainTheme).render(200).map((line) => line.trimEnd()).join("\n");
+  return { children, execute, render, tasks };
 }
 
 test("abort escalates an unclosed child despite killed=true and waits for close", async (t) => {
@@ -416,6 +424,61 @@ test("parallel cancellation preserves completed results in order", async (t) => 
   assert.equal(result.details.results[0].exitCode, 0);
   assert.deepEqual(result.details.results.slice(1).map((item) => item.stopReason), Array(7).fill("aborted"));
   assert.deepEqual(result.details.results.map((item) => item.task), Array.from({ length: 8 }, (_, i) => `task-${i}`));
+});
+
+test("parallel protocol failure in one agent keeps order, per-agent errors and rendered mixed outcome", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute, render, tasks } = setup(t);
+  const run = execute(undefined, false, "", true);
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(children.length, 4);
+  // Agent 1 emits a malformed message: it is terminated while the others keep running.
+  children[1].stdout.emit("data", Buffer.from(JSON.stringify({ type: "message_end", message: { role: "assistant", content: null } }) + "\n"));
+  assert.deepEqual(children[1].signals, ["SIGTERM"]);
+  for (const index of [0, 2, 3]) assert.deepEqual(children[index].signals, []);
+  // Finish out of order; the failed child is reaped last among the first batch.
+  for (const index of [3, 0, 2]) {
+    children[index].stdout.emit("data", messageLine(`output-${index}`));
+    children[index].emit("close", 0, null);
+  }
+  children[1].emit("close", null, "SIGTERM");
+  await settle();
+  assert.equal(children.length, 8);
+  for (const index of [7, 5, 4, 6]) {
+    children[index].stdout.emit("data", messageLine(`output-${index}`));
+    children[index].emit("close", 0, null);
+  }
+  const result = await run;
+  assert.deepEqual(tasks.map((task) => task.replace(/^Task: /, "")), Array.from({ length: 8 }, (_, i) => `task-${i}`));
+  assert.deepEqual(result.details.results.map((item) => item.task), Array.from({ length: 8 }, (_, i) => `task-${i}`));
+  assert.deepEqual(result.details.results.map((item) => item.exitCode), [0, 1, 0, 0, 0, 0, 0, 0]);
+  const failed = result.details.results[1];
+  assert.equal(failed.messages.length, 0);
+  assert.equal(failed.errorMessage, "Agent protocol contains a malformed message. Agent subprocess terminated by SIGTERM. Output may be incomplete.");
+  for (const [i, item] of result.details.results.entries()) {
+    if (i !== 1) assert.equal(item.errorMessage, undefined);
+  }
+  const text = result.content[0].text ?? "";
+  assert.match(text, /^Parallel: 7\/8 succeeded/);
+  const summaries = text.split("\n\n").slice(1);
+  assert.equal(summaries.length, 8);
+  assert.equal(summaries[1], `[implementer] failed: ${failed.errorMessage?.slice(0, 100)}...`);
+  for (const [i, summary] of summaries.entries()) {
+    if (i !== 1) assert.equal(summary, `[implementer] completed: output-${i}`);
+  }
+
+  const collapsed = render(result, false);
+  assert.match(collapsed, /^◐ parallel 7\/8 tasks/);
+  const collapsedIcons = [...collapsed.matchAll(/─── implementer ([✓✗])/g)].map((match) => match[1]);
+  assert.deepEqual(collapsedIcons, ["✓", "✗", "✓", "✓", "✓", "✓", "✓", "✓"]);
+  const collapsedOutputs = [...collapsed.matchAll(/output-\d|\(no output\)/g)].map((match) => match[0]);
+  assert.deepEqual(collapsedOutputs, ["output-0", "(no output)", ...Array.from({ length: 6 }, (_, i) => `output-${i + 2}`)]);
+
+  const expanded = render(result, true);
+  assert.match(expanded, /^◐ parallel 7\/8 tasks/);
+  const expandedTasks = [...expanded.matchAll(/─── implementer ([✓✗])\nTask: (task-\d)/g)].map((match) => `${match[2]}:${match[1]}`);
+  assert.deepEqual(expandedTasks, Array.from({ length: 8 }, (_, i) => `task-${i}:${i === 1 ? "✗" : "✓"}`));
+  assert.doesNotMatch(expanded, /output-1\b/);
 });
 
 test("pre-aborted chain creates no prompt or child", async (t) => {

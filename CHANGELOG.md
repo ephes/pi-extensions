@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Apply one Kagi result-limit policy in the tool and in `searchKagi`: round to an integer and clamp to 1–20 (previously the shared helper accepted up to 100 and neither path rounded); non-finite limits use the default of 10
+- Share one user-agent constant between Kagi search and web fetching
+- Test a parallel agent workflow where one agent fails the protocol while the others finish, covering result order, per-agent errors and collapsed/expanded rendering
+- Close stale backlog items, including the DNS check-then-use item already solved by pinned DNS answers
+
 - Validate consumed agent message envelopes, content blocks and supplied usage before retention; fail malformed messages and reap the child
 - Preserve every final assistant text block in output and chain handoffs, joining blocks with a newline
 

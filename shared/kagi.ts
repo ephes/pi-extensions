@@ -1,5 +1,6 @@
+import { USER_AGENT } from "./http.js";
+
 const KAGI_API_URL = "https://kagi.com/api/v0/search";
-const USER_AGENT = "pi-extensions/0.1 (+https://github.com/jochen/pi-extensions)";
 
 export interface KagiApiMeta {
   id?: string | null;
@@ -30,6 +31,15 @@ export interface KagiSearchResponse {
 
 export const KAGI_RESPONSE_MAX_BYTES = 1024 * 1024;
 export const KAGI_SEARCH_TIMEOUT_MS = 30_000;
+export const KAGI_LIMIT_MIN = 1;
+export const KAGI_LIMIT_MAX = 20;
+export const KAGI_LIMIT_DEFAULT = 10;
+
+/** The single Kagi result-limit policy: round to an integer, then clamp to 1-20; non-finite values use the default. */
+export function normalizeKagiLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return KAGI_LIMIT_DEFAULT;
+  return Math.max(KAGI_LIMIT_MIN, Math.min(Math.round(limit), KAGI_LIMIT_MAX));
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -104,9 +114,9 @@ export function getKagiApiKey(): string {
   return apiKey;
 }
 
-export async function searchKagi(query: string, limit = 10, signal?: AbortSignal): Promise<KagiSearchResponse> {
+export async function searchKagi(query: string, limit?: number, signal?: AbortSignal): Promise<KagiSearchResponse> {
   const apiKey = getKagiApiKey();
-  const normalizedLimit = Math.max(1, Math.min(limit, 100));
+  const normalizedLimit = normalizeKagiLimit(limit);
   const url = new URL(KAGI_API_URL);
   url.searchParams.set("q", query);
   url.searchParams.set("limit", String(normalizedLimit));
