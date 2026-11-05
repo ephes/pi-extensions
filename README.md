@@ -74,6 +74,8 @@ Set a Kagi API key for `kagi_search`:
 export KAGI_API_KEY="your-api-key"
 ```
 
+The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default.
+
 Kagi searches have a 30-second total deadline covering headers and body reads; caller cancellation is immediate. Success and error responses are limited to 1 MiB of streamed bytes, regardless of Content-Length. Timeout errors invite a retry (`TimeoutError`); cancellation uses `AbortError` with a controlled message. HTTP error diagnostics redact the configured API key.
 
 The response must contain a `data` array of result items (`t: 0`, string `url` and `title`, optional string `snippet` and string or finite numeric `published`) or related-search items (`t: 1`, string-only `list`). Optional result and metadata scalars may also be `null` for absent values. Optional metadata must be an object with string `id`/`node` and finite numeric `ms`/`api_balance` when supplied. Unknown extra fields are retained; unsupported item types and malformed fields fail with a controlled error.

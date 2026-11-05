@@ -3,6 +3,7 @@ import { decodeHTML } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
 import { Agent, fetch, type Response } from "undici";
+import { USER_AGENT } from "./http.js";
 
 export interface ReadablePage {
   url: string;
@@ -13,7 +14,6 @@ export interface ReadablePage {
   outputTruncated: boolean;
 }
 
-const USER_AGENT = "pi-extensions/0.1 (+https://github.com/jochen/pi-extensions)";
 const MAX_FETCH_BYTES = 1024 * 1024 * 2;
 const MAX_REDIRECTS = 5;
 const FETCH_DEADLINE_MS = 30_000;

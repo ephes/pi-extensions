@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { formatPublishedDate, searchKagi } from "../shared/kagi.js";
+import { formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
 
 export default function kagiSearchExtension(pi: ExtensionAPI) {
   pi.registerTool({
@@ -15,7 +15,11 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Search query." }),
-      limit: Type.Optional(Type.Number({ description: "Maximum number of results (1-20, default 10).", minimum: 1, maximum: 20 })),
+      limit: Type.Optional(Type.Number({
+        description: `Maximum number of results (${KAGI_LIMIT_MIN}-${KAGI_LIMIT_MAX}, default ${KAGI_LIMIT_DEFAULT}).`,
+        minimum: KAGI_LIMIT_MIN,
+        maximum: KAGI_LIMIT_MAX,
+      })),
     }),
 
     async execute(_toolCallId, params, signal, onUpdate) {
@@ -24,7 +28,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         throw new Error("Query cannot be empty.");
       }
 
-      const limit = Math.max(1, Math.min(params.limit ?? 10, 20));
+      const limit = normalizeKagiLimit(params.limit);
 
       onUpdate?.({
         content: [{ type: "text", text: `Searching Kagi for "${query}"...` }],
