@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Require undici >=7.30.1 (7.x) to prevent process crashes on excessive response content encodings; cover early-close responses in an isolated child process
+
 - Apply one Kagi result-limit policy in the tool and in `searchKagi`: round to an integer and clamp to 1–20 (previously the shared helper accepted up to 100 and neither path rounded); non-finite limits use the default of 10
 - Share one user-agent constant between Kagi search and web fetching
 - Test a parallel agent workflow where one agent fails the protocol while the others finish, covering result order, per-agent errors and collapsed/expanded rendering
