@@ -8,7 +8,7 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import tls from "node:tls";
-import { DefaultResourceLoader, SettingsManager, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { DefaultResourceLoader, SettingsManager, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 
@@ -49,7 +49,7 @@ async function installedSmoke(t: import("node:test").TestContext, damage?: strin
   const workflow = tools.find((tool) => tool.definition.name === "agent_workflow")!;
   const result = await workflow.definition.execute("smoke", {}, undefined, undefined, {
     cwd, modelRegistry: { getAvailable: () => [] },
-  } as unknown as ExtensionContext);
+  } as unknown as ExtensionToolContext);
   assert.match(JSON.stringify(result.content), /implementer/, "installed implementer discovery");
   assert.match(JSON.stringify(result.content), /reviewer/, "installed reviewer discovery");
   assert.equal((result.details as { agentsDir: string }).agentsDir, path.join(installed, "agents"));

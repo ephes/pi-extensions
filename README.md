@@ -6,7 +6,11 @@ A monorepo of Pi extensions that adds reusable tools for search, web access, and
 
 ### Local path
 
-Use Node 22 or newer. Install runtime dependencies in the checkout before registering it with Pi; local-path installation does not install them automatically.
+Use Node 22.19.0 or newer and Pi 1.5.0 or newer in the 1.x series
+(`@earendil-works/pi-coding-agent`). The retired `@mariozechner/pi-*` packages
+are no longer supported. Update the Pi host and this extension together; the SDK
+peers now use `@earendil-works/pi-*` >=1.5.0 and `typebox` >=1.3.27 (1.x).
+For an npm-installed host, run `npm install -g @earendil-works/pi-coding-agent@^1.5.0`. Install runtime dependencies in the checkout before registering it with Pi; local-path installation does not install them automatically.
 
 ```bash
 cd <path-to-pi-extensions>
@@ -94,6 +98,14 @@ just loc
 ```
 
 `just check` and `npm run check` both run lint, typecheck, and tests.
+CI also runs `npm run audit:prod` (`npm audit --omit=dev --audit-level=high`)
+after the locked install. High/critical production advisories and scanner or
+network errors fail CI. This gate excludes development dependencies; use
+`npm audit --json` to inspect the complete tree, including SDK peers installed
+for development. If the gate fails, inspect the advisory, update the affected
+dependency within supported ranges, refresh the lockfile and rerun `npm ci`,
+`npm run check`, and `npm run audit:prod`. Retry a registry outage when service
+returns; do not add blanket ignores or use `npm audit fix --force`.
 The test suite packs and extracts the npm publish layout, then uses Pi’s public
 resource loader with the lockfile-installed development peers to check unique
 tool registration and bundled agent/prompt discovery offline. Negative fixtures
@@ -139,8 +151,10 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - This repository starts as a single Pi package with multiple extension files.
 - The package manifest registers extensions via the conventional `./extensions` directory so installed Pi sessions discover all bundled tools end to end.
 - If it grows substantially, it can later be split into multiple packages inside the same repo.
+- Runtime dependencies require undici 7.30.1 or newer in the 7.x series to prevent process termination on excessive Content-Encoding responses. Reinstall dependencies after updating this checkout.
 - `web_content` canonicalizes IPv6 addresses before private/local classification, so compressed and expanded forms receive the same checks for both literal hosts and DNS answers.
 - `web_content` validates and pins DNS answers for each redirect target (including IPv4/IPv6 fallback), preserves the original Host/TLS name, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
+- `web_content` accepts `text/html`, `application/xhtml+xml`, and `text/plain` (case-insensitive, with optional parameters). HTML is extracted; plain text preserves whitespace, angle brackets and entity spellings. Missing Content-Type uses HTML extraction for compatibility; an empty or unsupported type (including PDF, images and JSON) fails before reading the body with a bounded format error. Text is decoded as UTF-8; charset parameters do not select other decoders. The same fetch/output limits, truncation flags, deadline and cancellation apply to all supported types.
 - `web_content` decodes HTML entities once in extracted titles and body text, including named and numeric Unicode references. Escaped literals such as `&amp;lt;` remain `&lt;`; malformed references follow HTML decoding rules.
 - `web_content` has one 30-second total deadline covering DNS, redirects, headers, and body consumption. Timeout errors invite a retry; caller cancellation remains immediate.
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
