@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Migrate SDK imports, development dependencies and peers to `@earendil-works/pi-*` >=1.5.0 (1.x) and `typebox` >=1.3.27 (1.x); require Node >=22.19.0 and a matching maintained Pi host
+
 - Require undici >=7.30.1 (7.x) to prevent process crashes on excessive response content encodings; cover early-close responses in an isolated child process
 
 - Apply one Kagi result-limit policy in the tool and in `searchKagi`: round to an integer and clamp to 1–20 (previously the shared helper accepted up to 100 and neither path rounded); non-finite limits use the default of 10

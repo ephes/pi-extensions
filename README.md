@@ -6,7 +6,11 @@ A monorepo of Pi extensions that adds reusable tools for search, web access, and
 
 ### Local path
 
-Use Node 22 or newer. Install runtime dependencies in the checkout before registering it with Pi; local-path installation does not install them automatically.
+Use Node 22.19.0 or newer and Pi 1.5.0 or newer in the 1.x series
+(`@earendil-works/pi-coding-agent`). The retired `@mariozechner/pi-*` packages
+are no longer supported. Update the Pi host and this extension together; the SDK
+peers now use `@earendil-works/pi-*` >=1.5.0 and `typebox` >=1.3.27 (1.x).
+For an npm-installed host, run `npm install -g @earendil-works/pi-coding-agent@^1.5.0`. Install runtime dependencies in the checkout before registering it with Pi; local-path installation does not install them automatically.
 
 ```bash
 cd <path-to-pi-extensions>
