@@ -1,7 +1,8 @@
 name: CI
 
 # Same checks as `npm run check` / `just check`: eslint, `tsc --noEmit` and
-# the node:test suite. Tests stub the network, so no secrets are needed.
+# the node:test suite, plus a production dependency audit. Tests use synthetic
+# local fixtures; the audit requires the npm registry. No secrets are needed.
 
 on:
   push:
@@ -33,5 +34,7 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
+      - name: Audit production dependencies (high or critical)
+        run: npm run audit:prod
       - name: Check (npm run check)
         run: npm run check

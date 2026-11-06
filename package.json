@@ -28,6 +28,7 @@
     ]
   },
   "scripts": {
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/**/*.test.ts",

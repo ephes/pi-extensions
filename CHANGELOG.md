@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Audit production dependencies in CI at the high-severity threshold; fail on scanner/network errors and document remediation commands
+
 - Dispatch web responses by Content-Type: extract HTML/XHTML, preserve plain text verbatim, and reject unsupported types before reading their bodies; missing headers retain HTML compatibility
 
 - Migrate SDK imports, development dependencies and peers to `@earendil-works/pi-*` >=1.5.0 (1.x) and `typebox` >=1.3.27 (1.x); require Node >=22.19.0 and a matching maintained Pi host

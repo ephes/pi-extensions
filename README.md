@@ -98,6 +98,14 @@ just loc
 ```
 
 `just check` and `npm run check` both run lint, typecheck, and tests.
+CI also runs `npm run audit:prod` (`npm audit --omit=dev --audit-level=high`)
+after the locked install. High/critical production advisories and scanner or
+network errors fail CI. This gate excludes development dependencies; use
+`npm audit --json` to inspect the complete tree, including SDK peers installed
+for development. If the gate fails, inspect the advisory, update the affected
+dependency within supported ranges, refresh the lockfile and rerun `npm ci`,
+`npm run check`, and `npm run audit:prod`. Retry a registry outage when service
+returns; do not add blanket ignores or use `npm audit fix --force`.
 The test suite packs and extracts the npm publish layout, then uses Pi’s public
 resource loader with the lockfile-installed development peers to check unique
 tool registration and bundled agent/prompt discovery offline. Negative fixtures
