@@ -48,7 +48,7 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
       const response = await withAbort(fetch(currentUrl, {
         headers: {
           "User-Agent": USER_AGENT,
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          Accept: "text/html,application/xhtml+xml,text/plain",
         },
         signal,
         redirect: "manual",
@@ -74,9 +74,17 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         throw new Error(`Failed to fetch ${currentUrl.toString()} (HTTP ${response.status})`);
       }
 
-      const { text: html, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal);
-      const title = extractTitle(html);
-      const extracted = extractReadableText(html);
+      // Preserve legacy HTML extraction when the server omits Content-Type.
+      const contentType = response.headers.get("content-type");
+      const mediaType = contentType === null ? "text/html" : contentType.split(";", 1)[0].trim().toLowerCase();
+      if (!["text/html", "application/xhtml+xml", "text/plain"].includes(mediaType)) {
+        void response.body?.cancel().catch(() => {});
+        throw new Error("Unsupported response Content-Type; expected text/html, application/xhtml+xml or text/plain.");
+      }
+
+      const { text, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal);
+      const title = mediaType === "text/plain" ? undefined : extractTitle(text);
+      const extracted = mediaType === "text/plain" ? text : extractReadableText(text);
 
       if (!extracted.trim()) {
         throw new Error(`Could not extract readable content from ${currentUrl.toString()}`);

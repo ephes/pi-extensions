@@ -7,7 +7,7 @@ export default function webContentExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_content",
     label: "Web Content",
-    description: "Fetch a web page URL and extract readable page content. Use this after kagi_search when you need the article or documentation text.",
+    description: "Fetch an HTML/XHTML or plain-text URL and return readable content. Use this after kagi_search when you need the article or documentation text.",
     promptSnippet: "Fetch and extract readable page content from a URL.",
     promptGuidelines: [
       "Use web_content on URLs returned by kagi_search when the user needs the actual page text.",
@@ -44,7 +44,7 @@ export default function webContentExtension(pi: ExtensionAPI) {
         lines.push("", `[Output truncated to ${maxChars} characters.]`);
       }
       if (page.sourceTruncated) {
-        lines.push("", "[Source HTML exceeded the fetch budget and was truncated before extraction.]");
+        lines.push("", "[Source response exceeded the fetch budget and was truncated before extraction.]");
       }
 
       return {

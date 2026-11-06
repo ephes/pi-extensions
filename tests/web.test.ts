@@ -307,3 +307,103 @@ test("malformed HTML references remain safe", () => {
   assert.equal(extractReadableText(`<p>${malformed}</p>`), malformed);
   assert.equal(decodeHtml("&#x110000; &#xD800; &#0;"), "� � �");
 });
+
+for (const contentType of ["text/html", "application/xhtml+xml; charset=UTF-8", "TEXT/HTML; charset=utf-8", undefined]) {
+  test(`fetch extracts HTML for Content-Type ${contentType ?? "absent"}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    await fixture(t, (_request, response) => {
+      if (contentType) response.setHeader("content-type", contentType);
+      response.end("<title>Example &amp; title</title><p>Hello &lt;world&gt;</p>");
+    });
+    const page = await fetchReadablePage("http://public.example/");
+    assert.equal(page.title, "Example & title");
+    assert.match(page.content, /Hello <world>/);
+    assert.equal(page.truncated, false);
+  });
+}
+
+for (const contentType of ["text/plain", "Text/Plain; charset=UTF-8"]) {
+  test(`fetch preserves plain text verbatim for ${contentType}`, async (t) => {
+    const text = "  2 < 3 and 4 > 1\n<title>literal</title> &amp; café\r\n";
+    t.mock.method(dns, "lookup", async () => approved);
+    await fixture(t, (_request, response) => {
+      response.setHeader("content-type", contentType);
+      response.end(text);
+    });
+    const page = await fetchReadablePage("http://public.example/");
+    assert.equal(page.title, undefined);
+    assert.equal(page.content, text);
+    assert.equal(page.sourceTruncated, false);
+    assert.equal(page.outputTruncated, false);
+    assert.equal(page.truncated, false);
+  });
+}
+
+for (const contentType of ["application/pdf", "image/png", "application/octet-stream", "application/json", ""]) {
+  test(`fetch rejects unsupported Content-Type ${contentType || "empty"} before reading its body`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    let closed!: Promise<void>;
+    await fixture(t, (request, response) => {
+      closed = new Promise<void>((resolve) => request.socket.once("close", resolve));
+      response.writeHead(200, { "content-type": contentType });
+      response.flushHeaders(); // Never send a body: rejection must not wait for it.
+    });
+    await assert.rejects(fetchReadablePage("http://public.example/"), {
+      message: "Unsupported response Content-Type; expected text/html, application/xhtml+xml or text/plain.",
+    });
+    await closed;
+  });
+}
+
+test("unsupported response errors stay bounded for a long Content-Type", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  await fixture(t, (_request, response) => {
+    response.setHeader("content-type", `application/${"x".repeat(4000)}`);
+    response.end("binary fixture");
+  });
+  await assert.rejects(fetchReadablePage("http://public.example/"), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /Unsupported response Content-Type/);
+    assert.ok(error.message.length < 150);
+    return true;
+  });
+});
+
+for (const contentType of ["text/html", "text/plain"]) {
+  for (const sourceTruncated of [false, true]) {
+    for (const outputTruncated of [false, true]) {
+      test(`${contentType} keeps truncation flags: source=${sourceTruncated}, output=${outputTruncated}`, async (t) => {
+        const text = "x".repeat(sourceTruncated ? 2 * 1024 * 1024 + 1 : 100);
+        t.mock.method(dns, "lookup", async () => approved);
+        await fixture(t, (_request, response) => {
+          response.setHeader("content-type", contentType);
+          response.end(text);
+        });
+        const maxChars = outputTruncated ? 10 : 3 * 1024 * 1024;
+        const page = await fetchReadablePage("http://public.example/", maxChars);
+        assert.equal(page.sourceTruncated, sourceTruncated);
+        assert.equal(page.outputTruncated, outputTruncated);
+        assert.equal(page.truncated, sourceTruncated || outputTruncated);
+        assert.equal(page.content, text.slice(0, Math.min(maxChars, 2 * 1024 * 1024)));
+      });
+    }
+  }
+}
+
+test("caller cancellation interrupts a stalled plain-text body", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const controller = new AbortController();
+  let ready!: () => void;
+  const received = new Promise<void>((resolve) => { ready = resolve; });
+  await fixture(t, (_request, response) => {
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.write("2 < 3 and 4 > 1");
+    ready();
+  });
+  const pending = fetchReadablePage("http://public.example/", 20_000, controller.signal);
+  const reason = new Error("Caller cancelled plain text");
+  const rejected = assert.rejects(pending, (error) => error === reason);
+  await received;
+  controller.abort(reason);
+  await rejected;
+});
