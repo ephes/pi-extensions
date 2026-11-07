@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Block IPv6 site-local and private well-known NAT64 destinations before transport for literals and DNS answers; reject unsupported local-use NAT64 layouts
+
 - Fail workflows safely when progress delivery throws: stop updates and queued tasks, terminate active process groups, and await child cleanup before removing prompts
 - Omit URL credentials, queries and fragments from web progress, call previews, output URL labels and diagnostics; drop raw transport/body error chains while preserving full transport URLs and final result details
 - Report source truncation only after observing bytes beyond the fetch limit; bound the EOF probe by the existing deadline and cancellation
