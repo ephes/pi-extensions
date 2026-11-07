@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fail workflows safely when progress delivery throws: stop updates and queued tasks, terminate active process groups, and await child cleanup before removing prompts
+- Omit URL credentials, queries and fragments from web progress, call previews, output URL labels and diagnostics; drop raw transport/body error chains while preserving full transport URLs and final result details
+- Report source truncation only after observing bytes beyond the fetch limit; bound the EOF probe by the existing deadline and cancellation
+- Render failed search and web calls as failures with bounded diagnostics, preserving empty-success and running displays
+
 - Require a completed final assistant answer before reporting success or handing output to the next chain step
 - Own POSIX subprocess groups and terminate descendants on cancellation/protocol failure, including escalation after direct-child close; reject unsupported Windows launches before preparation
 - Isolate parallel preparation failures and await started siblings while continuing queued tasks in input order

@@ -22,7 +22,7 @@ const connect = net.connect;
 mock.method(dns, "lookup", async () => [{ address: "1.1.1.1", family: 4 }]);
 mock.method(net, "connect", () => connect({ host: "127.0.0.1", port: address.port }));
 try {
-  await assert.rejects(fetchReadablePage("http://public.example/"), /fetch failed/);
+  await assert.rejects(fetchReadablePage("http://public.example/"), /Failed to fetch/);
   // Keep the process alive long enough to observe a late unhandled error.
   await new Promise((resolve) => setTimeout(resolve, 50));
   console.log("controlled fetch error; process survived");

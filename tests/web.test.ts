@@ -288,7 +288,7 @@ test("HTTPS retains the original TLS server name with a pinned resolver", async 
     });
     throw stop;
   });
-  await assert.rejects(fetchReadablePage("https://public.example/"), (error: unknown) => error instanceof Error && error.cause === stop);
+  await assert.rejects(fetchReadablePage("https://public.example/"), (error: unknown) => error instanceof Error && /Failed to fetch https:\/\/public.example/.test(error.message) && error.cause === undefined);
   assert.equal(connected, true);
 });
 
@@ -406,4 +406,114 @@ test("caller cancellation interrupts a stalled plain-text body", async (t) => {
   await received;
   controller.abort(reason);
   await rejected;
+});
+
+for (const size of [2 * 1024 * 1024 - 1, 2 * 1024 * 1024, 2 * 1024 * 1024 + 1]) {
+  test(`source truncation reports omitted bytes at size ${size}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const body = "A".repeat(size);
+    await fixture(t, (_request, response) => {
+      response.setHeader("content-type", "text/plain");
+      response.write(body.slice(0, 17));
+      response.end(body.slice(17));
+    });
+    const page = await fetchReadablePage("http://public.example/", 3 * 1024 * 1024);
+    assert.equal(page.sourceTruncated, size > 2 * 1024 * 1024);
+    assert.equal(page.truncated, size > 2 * 1024 * 1024);
+    assert.equal(page.content, body.slice(0, 2 * 1024 * 1024));
+  });
+}
+
+for (const cancel of [false, true]) {
+  test(`post-cap EOF probe remains bounded (caller cancel=${cancel})`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    let decoded!: () => void;
+    const reachedCap = new Promise<void>((resolve) => { decoded = resolve; });
+    const decode = TextDecoder.prototype.decode;
+    let decodedBytes = 0;
+    t.mock.method(TextDecoder.prototype, "decode", function(this: TextDecoder, ...args: Parameters<typeof decode>) {
+      const text = decode.apply(this, args);
+      decodedBytes += args[0]?.byteLength ?? 0;
+      if (decodedBytes === 2 * 1024 * 1024) decoded();
+      return text;
+    });
+    let closed!: Promise<void>;
+    await fixture(t, (request, response) => {
+      closed = new Promise<void>((resolve) => request.socket.once("close", resolve));
+      response.setHeader("content-type", "text/plain");
+      response.write("A".repeat(2 * 1024 * 1024));
+    });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const controller = new AbortController();
+    const pending = fetchReadablePage("http://public.example/", 3 * 1024 * 1024, controller.signal);
+    const rejection = assert.rejects(pending, cancel ? /cancelled/ : /timed out/);
+    // Observe consumption at the decoder boundary, not merely a server write.
+    await reachedCap;
+    if (cancel) controller.abort(new Error("caller cancelled"));
+    else t.mock.timers.tick(30_000);
+    await rejection;
+    await closed;
+  });
+}
+
+for (const outcome of ["http", "empty", "redirect-missing", "redirect-limit", "transport", "body", "credentials", "invalid-redirect"] as const) {
+  test(`signed initial and redirected URLs stay out of ${outcome} errors`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const paths: string[] = [];
+    await fixture(t, (request, response) => {
+      paths.push(request.url!);
+      if (paths.length === 1) {
+        response.writeHead(302, { location: "http://other.example/final?redirect-signature=hidden#redirect-fragment" });
+      } else if (outcome === "credentials") response.writeHead(302, { location: "http://redirect-user:redirect-password@other.example/final?signed-secret=hidden#fragment" });
+      else if (outcome === "invalid-redirect") response.writeHead(302, { location: "http://redirect-user:redirect-password@[invalid?signed-secret=hidden#fragment" });
+      else if (outcome === "body") {
+        response.writeHead(200, { "content-type": "text/plain", "content-length": 100 });
+        response.write("hello");
+        setImmediate(() => response.destroy());
+        return;
+      } else if (outcome === "http") response.writeHead(403);
+      else if (outcome === "redirect-missing") response.writeHead(302);
+      else if (outcome === "redirect-limit") response.writeHead(302, { location: "/final?redirect-signature=hidden#redirect-fragment" });
+      else if (outcome === "transport") { request.socket.destroy(); return; }
+      response.end();
+    });
+    await assert.rejects(fetchReadablePage("http://public.example/start?signature=secret%2Bvalue#initial-fragment"), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.doesNotMatch(error.stack! + JSON.stringify(error), /signature|secret|hidden|fragment|redirect-user|redirect-password/);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+    assert.equal(paths[0], "/start?signature=secret%2Bvalue");
+    assert.equal(paths[1], "/final?redirect-signature=hidden");
+  });
+}
+
+test("web tool keeps signed transport and final state while displaying a safe URL", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const requests: string[] = [];
+  await fixture(t, (request, response) => {
+    requests.push(request.url!);
+    response.setHeader("content-type", "text/plain");
+    response.end("Synthetic document body");
+  });
+  const { default: extension } = await import("../extensions/web_content.js");
+  type Result = { content: Array<{ text: string }>; details: { url: string } };
+  let execute!: (id: string, params: unknown, signal: undefined, onUpdate: (result: Result) => void) => Promise<Result>;
+  extension({ registerTool(tool: { execute: typeof execute }) { execute = tool.execute; } } as never);
+  const url = "http://public.example/document?signature=exact%2Bbytes&key=synthetic#fragment";
+  const updates: Result[] = [];
+  const result = await execute("test", { url }, undefined, (update) => updates.push(update));
+  assert.deepEqual(requests, ["/document?signature=exact%2Bbytes&key=synthetic"]);
+  assert.equal(result.details.url, url);
+  assert.equal(result.content[0].text, "# Page content\n\nURL: http://public.example/document\n\nSynthetic document body");
+  assert.doesNotMatch(JSON.stringify(updates), /signature|exact|synthetic|fragment/);
+});
+
+test("invalid input URLs produce controlled diagnostics without raw input", async () => {
+  await assert.rejects(fetchReadablePage("http://user:password@[invalid?secret#fragment"), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, "Invalid web URL.");
+    assert.doesNotMatch(JSON.stringify(error), /password|secret|fragment/);
+    return true;
+  });
 });

@@ -25,6 +25,21 @@ const reTags = /<[^>]+>/g;
 const reMultiNl = /\n{3,}/g;
 const reTitle = /<title[^>]*>(.*?)<\/title>/is;
 
+// Human-visible URLs never include access credentials or signed parameters.
+export function displayUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    if (!["http:", "https:"].includes(url.protocol)) return "[invalid URL]";
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "[invalid URL]";
+  }
+}
+
 export async function fetchReadablePage(rawUrl: string, maxChars = 20000, signal?: AbortSignal): Promise<ReadablePage> {
   const deadline = new AbortController();
   const timeoutError = new Error("Web fetch timed out after 30 seconds; retry the request.");
@@ -39,7 +54,9 @@ export async function fetchReadablePage(rawUrl: string, maxChars = 20000, signal
 
 async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal): Promise<ReadablePage> {
   signal.throwIfAborted();
-  let currentUrl = new URL(rawUrl.trim());
+  let currentUrl: URL;
+  try { currentUrl = new URL(rawUrl.trim()); }
+  catch { throw new Error("Invalid web URL."); }
   let redirectCount = 0;
 
   while (true) {
@@ -53,25 +70,30 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         signal,
         redirect: "manual",
         dispatcher,
-      }), signal);
+      }), signal).catch(() => {
+        signal.throwIfAborted();
+        // Transport errors (including their causes) can echo signed URLs.
+        throw new Error(`Failed to fetch ${displayUrl(currentUrl.toString())}; check the URL or retry.`);
+      });
 
       if (isRedirectStatus(response.status)) {
         void response.body?.cancel().catch(() => {});
         const location = response.headers.get("location");
         if (!location) {
-          throw new Error(`Redirect response from ${currentUrl.toString()} did not include a Location header.`);
+          throw new Error(`Redirect response from ${displayUrl(currentUrl.toString())} did not include a Location header.`);
         }
         if (redirectCount >= MAX_REDIRECTS) {
-          throw new Error(`Too many redirects while fetching ${rawUrl.trim()}`);
+          throw new Error(`Too many redirects while fetching ${displayUrl(rawUrl.trim())}`);
         }
-        currentUrl = new URL(location, currentUrl);
+        try { currentUrl = new URL(location, currentUrl); }
+        catch { throw new Error("Invalid web redirect URL."); }
         redirectCount += 1;
         continue;
       }
 
       if (!response.ok) {
         void response.body?.cancel().catch(() => {});
-        throw new Error(`Failed to fetch ${currentUrl.toString()} (HTTP ${response.status})`);
+        throw new Error(`Failed to fetch ${displayUrl(currentUrl.toString())} (HTTP ${response.status})`);
       }
 
       // Preserve legacy HTML extraction when the server omits Content-Type.
@@ -82,12 +104,15 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         throw new Error("Unsupported response Content-Type; expected text/html, application/xhtml+xml or text/plain.");
       }
 
-      const { text, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal);
+      const { text, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal).catch(() => {
+        signal.throwIfAborted();
+        throw new Error(`Unable to read response from ${displayUrl(currentUrl.toString())}; retry the request.`);
+      });
       const title = mediaType === "text/plain" ? undefined : extractTitle(text);
       const extracted = mediaType === "text/plain" ? text : extractReadableText(text);
 
       if (!extracted.trim()) {
-        throw new Error(`Could not extract readable content from ${currentUrl.toString()}`);
+        throw new Error(`Could not extract readable content from ${displayUrl(currentUrl.toString())}`);
       }
 
       const normalizedLimit = Math.max(1, maxChars);
@@ -289,7 +314,7 @@ async function readResponseTextWithLimit(response: Response, maxBytes: number, s
         fullyRead = true;
         break;
       }
-      if (!value) {
+      if (!value || value.byteLength === 0) {
         continue;
       }
 
@@ -299,7 +324,7 @@ async function readResponseTextWithLimit(response: Response, maxBytes: number, s
         break;
       }
 
-      if (value.byteLength >= remaining) {
+      if (value.byteLength > remaining) {
         text += decoder.decode(value.subarray(0, remaining), { stream: true });
         bytesRead += remaining;
         truncated = true;

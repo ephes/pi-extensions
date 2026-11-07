@@ -823,3 +823,69 @@ test("group signal errors retain the protocol diagnostic", async (t) => {
   assert.match(result.details.results[0].errorMessage!, /invalid UTF-8/);
   assert.ok(result.details.results[0].warnings.includes("Unable to signal the owned agent process group."));
 });
+
+for (const mode of ["single", "chain", "parallel"] as const) {
+  for (const eof of [false, true]) {
+    test(`throwing progress observer cleans ${mode} groups and prompts (EOF=${eof})`, async (t) => {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const { children, execute } = setup(t);
+      const directories: string[] = [];
+      const mkdir = fs.mkdtempSync;
+      t.mock.method(fs, "mkdtempSync", (...args: Parameters<typeof fs.mkdtempSync>) => {
+        const directory = mkdir(...args) as string;
+        directories.push(directory);
+        return directory;
+      });
+      syncBuiltinESMExports();
+      t.after(() => directories.forEach((directory) => fs.rmSync(directory, { recursive: true, force: true })));
+      let updates = 0;
+      const run = execute(undefined, mode === "chain", "test", mode === "parallel", () => {
+        updates++;
+        throw new Error("private observer detail ".repeat(10000));
+      });
+      const child = children[0];
+      // A descendant remains in the group even after direct-child close.
+      child.retainGroup = true;
+      const bytes = messageLine("completed answer");
+      assert.doesNotThrow(() => child.stdout.emit("data", eof ? bytes.subarray(0, -1) : bytes));
+      if (eof) assert.doesNotThrow(() => child.emit("close", 0, null));
+      assert.deepEqual(child.signals, ["SIGTERM"]);
+      assert.ok(children.every((entry) => entry.signals.includes("SIGTERM")));
+      assert.doesNotThrow(() => child.stdout.emit("data", messageLine("later update")));
+      let settled = false;
+      void run.then(() => { settled = true; });
+      for (const entry of children) if (entry !== child || !eof) entry.emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+      assert.equal(fs.existsSync(directories[0]), true);
+      t.mock.timers.tick(5000);
+      const result = await run;
+      assert.equal(result.isError, true);
+      assert.equal(updates, 1);
+      assert.match(JSON.stringify(result), /progress delivery failed/);
+      assert.doesNotMatch(JSON.stringify(result), /private observer detail/);
+      assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+      assert.equal(child.groupAlive, false);
+      assert.ok(directories.every((directory) => !fs.existsSync(directory)));
+      assert.equal(children.length, mode === "parallel" ? 4 : 1);
+    });
+  }
+}
+
+test("parallel completion progress failure is a failed result after reaping siblings", async (t) => {
+  const { children, execute } = setup(t);
+  let updates = 0;
+  const run = execute(undefined, false, "test", true, (partial) => {
+    if (partial.details.results.some((result) => result.exitCode !== -1)) {
+      updates++;
+      throw new Error("observer failed");
+    }
+  });
+  children[0].stdout.emit("data", messageLine("answer"));
+  // Fail the completion update, after child zero has closed.
+  for (const child of children) child.emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, true);
+  assert.equal(updates, 1);
+  assert.match(result.details.results[0].errorMessage!, /progress delivery failed/);
+});

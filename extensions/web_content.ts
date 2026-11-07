@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { fetchReadablePage } from "../shared/web.js";
+import { displayUrl, fetchReadablePage } from "../shared/web.js";
 
 export default function webContentExtension(pi: ExtensionAPI) {
   pi.registerTool({
@@ -27,15 +27,15 @@ export default function webContentExtension(pi: ExtensionAPI) {
       const maxChars = Math.max(1000, Math.min(params.maxChars ?? 12000, 40000));
 
       onUpdate?.({
-        content: [{ type: "text", text: `Fetching readable content from ${url}...` }],
-        details: { url, maxChars },
+        content: [{ type: "text", text: `Fetching readable content from ${displayUrl(url)}...` }],
+        details: { url: displayUrl(url), maxChars },
       });
 
       const page = await fetchReadablePage(url, maxChars, signal);
       const lines = [
         page.title ? `# ${page.title}` : "# Page content",
         "",
-        `URL: ${page.url}`,
+        `URL: ${displayUrl(page.url)}`,
         "",
         page.content,
       ];
@@ -61,7 +61,7 @@ export default function webContentExtension(pi: ExtensionAPI) {
     },
 
     renderCall(args, theme) {
-      const url = String(args.url ?? "");
+      const url = displayUrl(String(args.url ?? ""));
       const shortened = url.length > 72 ? `${url.slice(0, 69)}...` : url;
       return new Text(theme.fg("toolTitle", theme.bold("web_content ")) + theme.fg("accent", shortened), 0, 0);
     },
@@ -69,6 +69,13 @@ export default function webContentExtension(pi: ExtensionAPI) {
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) {
         return new Text(theme.fg("accent", "Fetching page content..."), 0, 0);
+      }
+
+      if (result.isError) {
+        const diagnostic = result.content.find((item) => item.type === "text")?.text ?? "";
+        const limit = expanded ? 640 : 160;
+        const preview = diagnostic.length > limit ? `${diagnostic.slice(0, limit)}...` : diagnostic;
+        return new Text(theme.fg("error", "Page fetch failed") + (preview ? "\n" + theme.fg("dim", preview) : ""), 0, 0);
       }
 
       const details = (result.details ?? {}) as { title?: string; truncated?: boolean; charCount?: number };
