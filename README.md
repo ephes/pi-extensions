@@ -78,13 +78,15 @@ Set a Kagi API key for `kagi_search`:
 export KAGI_API_KEY="your-api-key"
 ```
 
-The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default.
+The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default. The tool enforces this count locally even if the API returns extra rows.
+
+The tool retains at most 24,000 characters of formatted result rows, with titles capped at 512, snippets at 2,048 and publication strings at 64 characters. URLs stay complete; rows with URLs longer than 2,048 characters are omitted. It keeps at most 10 related searches of 128 characters each and a 512-character query label. These limits keep final text below 32 Ki characters (JavaScript UTF-16 code units). Details contain only retained URLs/counts and supported metadata (`id`/`node` capped at 256 characters, plus `ms`/`api_balance`); arbitrary metadata fields are omitted. `resultCount` and `relatedCount` describe retained entries, `originalResultCount` and `originalRelatedCount` describe the API response, and `truncated` plus an output notice identify omitted rows, clipped text or metadata. Fewer than `limit` results may fit. An empty search still reports “No results found”; if all returned rows exceed the output limits, the tool reports that no results were retained. Related-only responses keep the empty-search message with zero retained related entries.
 
 Kagi searches have a 30-second total deadline covering headers and body reads; caller cancellation is immediate. Success and error responses are limited to 1 MiB of streamed bytes, regardless of Content-Length. Timeout errors invite a retry (`TimeoutError`); cancellation uses `AbortError` with a controlled message. HTTP error diagnostics redact the configured API key.
 
 Search and web result displays mark failed calls as failures with bounded diagnostics; an empty successful search remains “0 results”. Partial results retain their running status.
 
-The response must contain a `data` array of result items (`t: 0`, string `url` and `title`, optional string `snippet` and string or finite numeric `published`) or related-search items (`t: 1`, string-only `list`). Optional result and metadata scalars may also be `null` for absent values. Optional metadata must be an object with string `id`/`node` and finite numeric `ms`/`api_balance` when supplied. Unknown extra fields are retained; unsupported item types and malformed fields fail with a controlled error.
+The response must contain a `data` array of result items (`t: 0`, string `url` and `title`, optional string `snippet` and string or finite numeric `published`) or related-search items (`t: 1`, string-only `list`). Optional result and metadata scalars may also be `null` for absent values. Optional metadata must be an object with string `id`/`node` and finite numeric `ms`/`api_balance` when supplied. The shared `searchKagi` helper retains unknown extra fields after validation; the tool projects bounded metadata as described above. Unsupported item types and malformed fields fail with a controlled error.
 
 ## Development
 

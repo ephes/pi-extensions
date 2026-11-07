@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enforce Kagi result counts locally and bound retained rows, related searches and metadata; preserve complete useful URLs and report original/retained counts and truncation
+
 - Block IPv6 site-local and private well-known NAT64 destinations before transport for literals and DNS answers; reject unsupported local-use NAT64 layouts
 
 - Fail workflows safely when progress delivery throws: stop updates and queued tasks, terminate active process groups, and await child cleanup before removing prompts

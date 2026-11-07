@@ -152,3 +152,113 @@ test("searchKagi and the kagi_search tool send the normalized limit and the shar
   assert.deepEqual(requests.map((request) => request.limit), [...expected, ...expected]);
   assert.ok(requests.every((request) => request.userAgent === USER_AGENT));
 });
+
+type SearchTool = { execute(id: string, params: unknown, signal: undefined, update: undefined): Promise<{
+  content: Array<{ type: "text"; text: string }>;
+  details: { resultCount: number; relatedCount: number; originalResultCount: number; originalRelatedCount: number; truncated: boolean; urls: string[]; meta?: Record<string, unknown> };
+}> };
+function registeredSearch() {
+  let tool!: SearchTool;
+  kagiSearchExtension({ registerTool(definition: SearchTool) { tool = definition; } } as never);
+  return tool;
+}
+
+test("registered search enforces normalized result counts locally", async (t) => {
+  const rows = Array.from({ length: 30 }, (_, i) => ({ t: 0, url: `https://example.com/${i}`, title: `Result ${i}` }));
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: rows }));
+  for (const [limit, expected] of [[1.5, 2], [0, 1], [NaN, 10], [undefined, 10], [21, 20]] as const) {
+    const result = await registeredSearch().execute("test", { query: "query", limit }, undefined, undefined);
+    assert.equal(result.details.resultCount, expected);
+    assert.deepEqual(result.details.urls, rows.slice(0, expected).map(row => row.url));
+    assert.equal(result.details.originalResultCount, 30);
+    assert.equal(result.details.truncated, true);
+    assert.doesNotMatch(result.content[0].text, new RegExp(`Result ${expected}\\b`));
+  }
+});
+
+test("registered search bounds retained text, related terms and metadata below the transport cap", async (t) => {
+  const payload = {
+    data: [
+      ...Array.from({ length: 30 }, (_, i) => ({ t: 0, url: `https://example.com/${i}`, title: "T".repeat(2048), snippet: "S".repeat(8192), published: "P".repeat(2048) })),
+      { t: 1, list: Array.from({ length: 40 }, () => "R".repeat(4096)) },
+    ],
+    meta: { id: "I".repeat(120000), node: "N".repeat(120000), ms: 1, api_balance: 2, extra: "DROP-ME".repeat(10000) },
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(payload)) < KAGI_RESPONSE_MAX_BYTES);
+  t.mock.method(globalThis, "fetch", async () => Response.json(payload));
+  const result = await registeredSearch().execute("test", { query: "query", limit: 20 }, undefined, undefined);
+  assert.ok(result.content[0].text.length <= 32768);
+  assert.ok(JSON.stringify(result.details).length <= 32768);
+  assert.equal(result.details.truncated, true);
+  assert.equal(result.details.originalResultCount, 30);
+  assert.equal(result.details.originalRelatedCount, 40);
+  assert.equal(result.details.resultCount, result.details.urls.length);
+  assert.ok(result.details.resultCount > 0 && result.details.resultCount < 20);
+  assert.equal(result.details.relatedCount, 10);
+  assert.equal((result.content[0].text.match(/^- /gm) ?? []).length, 10);
+  assert.match(result.content[0].text, /truncated/i);
+  assert.doesNotMatch(JSON.stringify(result), /T{513}|S{2049}|P{65}|R{129}|I{257}|N{257}|DROP-ME/);
+  assert.deepEqual(Object.keys(result.details.meta!).sort(), ["api_balance", "id", "ms", "node"]);
+});
+
+test("registered search preserves complete useful URLs and omits oversized URLs", async (t) => {
+  const useful = `https://example.com/${"u".repeat(1800)}`;
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [
+    { t: 0, url: `https://example.com/${"x".repeat(3000)}`, title: "Oversized URL" },
+    { t: 0, url: useful, title: "Useful", snippet: "Snippet", published: 1735689600 },
+  ] }));
+  const result = await registeredSearch().execute("test", { query: "query", limit: 2 }, undefined, undefined);
+  assert.deepEqual(result.details.urls, [useful]);
+  assert.equal(result.details.resultCount, 1);
+  assert.equal(result.details.truncated, true);
+  assert.ok(result.content[0].text.includes(useful));
+  assert.match(result.content[0].text, /Useful\n.*URL:.*\n.*Snippet: Snippet\n.*Published: 2025-01-01/);
+  assert.doesNotMatch(result.content[0].text, /Oversized URL/);
+});
+
+test("registered search keeps ordinary and empty search output with truthful retained counts", async (t) => {
+  let payload: unknown = valid;
+  t.mock.method(globalThis, "fetch", async () => Response.json(payload));
+  const tool = registeredSearch();
+  const ordinary = await tool.execute("test", { query: "query" }, undefined, undefined);
+  assert.equal(ordinary.details.resultCount, 1);
+  assert.equal(ordinary.details.relatedCount, 1);
+  assert.equal(ordinary.details.truncated, true); // Unknown metadata is omitted.
+  assert.match(ordinary.content[0].text, /Café\n.*https:\/\/example.com\n.*text\n.*2025-01-01/);
+  payload = { data: [], meta: { id: "id" } };
+  const empty = await tool.execute("test", { query: "query" }, undefined, undefined);
+  assert.equal(empty.content[0].text, 'No results found for "query".');
+  assert.equal(empty.details.resultCount, 0);
+  assert.equal(empty.details.relatedCount, 0);
+  assert.equal(empty.details.truncated, false);
+  payload = { data: [{ t: 1, list: ["related only"] }] };
+  const relatedOnly = await tool.execute("test", { query: "query" }, undefined, undefined);
+  assert.equal(relatedOnly.details.resultCount, 0);
+  assert.equal(relatedOnly.details.relatedCount, 0);
+  assert.equal(relatedOnly.details.originalRelatedCount, 1);
+  assert.equal(relatedOnly.details.truncated, true);
+});
+
+
+test("registered search bounds aggregate URL retention and query labels", async (t) => {
+  const rows = Array.from({ length: 20 }, (_, i) => ({ t: 0, url: `https://example.com/${i}/${"u".repeat(2000)}`, title: "Title" }));
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: rows }));
+  const result = await registeredSearch().execute("test", { query: "Q".repeat(40000), limit: 20 }, undefined, undefined);
+  assert.ok(result.content[0].text.length < 32768);
+  assert.ok(JSON.stringify(result.details).length < 32768);
+  assert.ok(result.details.resultCount > 0 && result.details.resultCount < 20);
+  assert.deepEqual(result.details.urls, rows.slice(0, result.details.resultCount).map(row => row.url));
+  assert.equal(result.details.truncated, true);
+  assert.doesNotMatch(JSON.stringify(result), /Q{513}/);
+});
+
+test("registered search reports when every result URL is too large", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ t: 0, url: "u".repeat(2049), title: "Title" }] }));
+  const result = await registeredSearch().execute("test", { query: "query" }, undefined, undefined);
+  assert.equal(result.details.resultCount, 0);
+  assert.deepEqual(result.details.urls, []);
+  assert.equal(result.details.originalResultCount, 1);
+  assert.equal(result.details.truncated, true);
+  assert.match(result.content[0].text, /No results retained.*output limits/);
+  assert.doesNotMatch(result.content[0].text, /No results found/);
+});
