@@ -626,17 +626,17 @@ for (const type of ["message_end", "tool_result_end"]) {
   });
 }
 
-for (const terminal of ["empty", "tools", "length", "toolUse", "missing", "blank", "later-incomplete", "stop"]) {
+for (const terminal of ["empty", "tools", "length", "toolUse", "missing", "blank", "later-incomplete", "thinking", "stop"]) {
   test(`terminal completion required before chain handoff: ${terminal}`, async (t) => {
-    const { children, execute } = setup(t);
+    const { children, execute, render } = setup(t);
     const run = execute(undefined, true);
-    if (terminal === "later-incomplete") children[0].stdout.emit("data", messageLine("earlier answer"));
+    if (terminal === "later-incomplete" || terminal === "thinking") children[0].stdout.emit("data", messageLine("earlier answer"));
     if (terminal === "tools") {
       children[0].stdout.emit("data", JSON.stringify({ type: "tool_result_end", message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] } }) + "\n");
     } else if (terminal !== "empty") {
       children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: {
-        role: "assistant", content: [{ type: "text", text: terminal === "blank" ? "  " : "answer" }],
-        stopReason: terminal === "missing" || terminal === "later-incomplete" ? undefined : terminal === "blank" ? "stop" : terminal,
+        role: "assistant", content: terminal === "thinking" ? [{ type: "thinking", thinking: "still reasoning" }] : [{ type: "text", text: terminal === "blank" ? "  " : "answer" }],
+        stopReason: terminal === "missing" || terminal === "later-incomplete" ? undefined : terminal === "blank" || terminal === "thinking" ? "stop" : terminal,
       } }) + "\n");
     }
     children[0].emit("close", 0, null);
@@ -649,6 +649,9 @@ for (const terminal of ["empty", "tools", "length", "toolUse", "missing", "blank
     assert.equal(Boolean(result.isError), terminal !== "stop");
     assert.equal(children.length, terminal === "stop" ? 2 : 1);
     if (terminal !== "stop") assert.match(result.content[0].text!, /completed assistant answer.*retry/i);
+    if (terminal === "thinking") {
+      for (const expanded of [false, true]) assert.match(render(result, expanded), /earlier answer/);
+    }
   });
 }
 

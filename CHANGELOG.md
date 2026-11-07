@@ -6,6 +6,7 @@
 - Own POSIX subprocess groups and terminate descendants on cancellation/protocol failure, including escalation after direct-child close; reject unsupported Windows launches before preparation
 - Isolate parallel preparation failures and await started siblings while continuing queued tasks in input order
 - Align workflow success counts, summaries, rendering and tool error flags, including exit-zero provider failures and mixed batches
+- Older saved workflow results without a final assistant stop status may now display as failed when session history is rendered again
 
 - Audit production dependencies in CI at the high-severity threshold; fail on scanner/network errors and document remediation commands
 
