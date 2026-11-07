@@ -55,6 +55,22 @@ test("isBlockedIp classifies equivalent IPv6 spellings consistently", () => {
   }
 });
 
+
+const specialBlocked = [
+  "fec0::1", "FEDF:0000:0000:0000:0000:0000:0000:0001", "feff::1",
+  "64:ff9b::7f00:1", "0064:FF9B:0000:0000:0000:0000:0A00:0001",
+  "64:ff9b::c0a8:101", "64:ff9b::a9fe:a9fe", "64:ff9b::ac10:1",
+  "64:ff9b::6440:1", "64:ff9b::e000:1", "64:ff9b::", "64:ff9b::1",
+  "64:ff9b:1::808:808", "0064:ff9b:0001:abcd:0000:0000:0000:0001",
+];
+
+test("special IPv6 policy covers site-local and translation ranges", () => {
+  for (const ip of specialBlocked) assert.equal(isBlockedIp(ip), true, ip);
+  for (const ip of ["64:ff9b::808:808", "0064:ff9b:0:0:0:0:0101:0101", "64:ff9b::ffff:ffff:ffff", "64:ff9b:2::1", "fe7f::1"]) {
+    assert.equal(isBlockedIp(ip), false, ip);
+  }
+});
+
 test("validateUrl rejects unsupported schemes and local targets", () => {
   assert.throws(() => validateUrl(new URL("ftp://example.com/file.txt")), /Unsupported URL scheme/);
   assert.throws(() => validateUrl(new URL("http://localhost/test")), /Blocked local hostname/);
@@ -184,6 +200,21 @@ test("IPv6 private literals are rejected before transport", async () => {
     await assert.rejects(fetchReadablePage(`http://[${ip}]/`), /Blocked/);
   }
 });
+
+
+for (const ip of specialBlocked) {
+  test(`special IPv6 ${ip} is rejected in literals and mixed DNS answers before transport`, async (t) => {
+    t.mock.method(dns, "lookup", async () => [...approved, { address: ip, family: 6 }]);
+    const connect = t.mock.method(net, "connect", () => { throw new Error("Unexpected connection"); });
+    const tlsConnect = t.mock.method(tls, "connect", () => { throw new Error("Unexpected TLS connection"); });
+    for (const scheme of ["http", "https"]) {
+      await assert.rejects(fetchReadablePage(`${scheme}://[${ip}]/`), /Blocked/);
+      await assert.rejects(fetchReadablePage(`${scheme}://public.example/`), /Blocked hostname/);
+    }
+    assert.equal(connect.mock.callCount(), 0);
+    assert.equal(tlsConnect.mock.callCount(), 0);
+  });
+}
 
 async function flushMicrotasks() {
   for (let i = 0; i < 10; i++) await Promise.resolve();

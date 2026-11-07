@@ -216,7 +216,10 @@ export function isBlockedIp(ip: string): boolean {
     return true;
   }
 
-  const mappedIpv4 = extractMappedIpv4(normalized);
+  // Local-use NAT64 permits several embedding layouts; refuse the entire /48.
+  if (normalized.startsWith("64:ff9b:1:")) return true;
+
+  const mappedIpv4 = extractEmbeddedIpv4(normalized);
   if (mappedIpv4) {
     return isBlockedIp(mappedIpv4);
   }
@@ -226,6 +229,7 @@ export function isBlockedIp(ip: string): boolean {
   if (!Number.isNaN(firstHextet)) {
     if ((firstHextet & 0xfe00) === 0xfc00) return true;
     if ((firstHextet & 0xffc0) === 0xfe80) return true;
+    if ((firstHextet & 0xffc0) === 0xfec0) return true;
     if ((firstHextet & 0xff00) === 0xff00) return true;
   }
 
@@ -269,29 +273,15 @@ function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
-function extractMappedIpv4(ip: string): string | undefined {
-  const prefixes = ["::ffff:", "0:0:0:0:0:ffff:"];
-  const prefix = prefixes.find((candidatePrefix) => ip.startsWith(candidatePrefix));
-  if (!prefix) {
-    return undefined;
-  }
-
-  const candidate = ip.slice(prefix.length);
-  if (net.isIPv4(candidate)) {
-    return candidate;
-  }
-
-  const parts = candidate.split(":");
-  if (parts.length !== 2) {
-    return undefined;
-  }
-
-  const high = Number.parseInt(parts[0], 16);
-  const low = Number.parseInt(parts[1], 16);
-  if (Number.isNaN(high) || Number.isNaN(low)) {
-    return undefined;
-  }
-
+// Input is canonical IPv6. Both supported /96 prefixes put IPv4 in the low 32 bits.
+function extractEmbeddedIpv4(ip: string): string | undefined {
+  const prefix = ["::ffff:", "64:ff9b::"].find((candidate) => ip.startsWith(candidate));
+  if (!prefix) return undefined;
+  const parts = ip.slice(prefix.length).split(":");
+  // More than two remaining hextets is outside the NAT64 /96.
+  if (parts.length > 2) return undefined;
+  const high = parts.length === 2 ? Number.parseInt(parts[0], 16) : 0;
+  const low = Number.parseInt(parts.at(-1) || "0", 16);
   return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 }
 

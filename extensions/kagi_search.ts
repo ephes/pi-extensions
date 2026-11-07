@@ -1,7 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
+import { type KagiApiMeta, formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
+
+const RESULT_TEXT_MAX_CHARS = 24_000;
+const RELATED_MAX_COUNT = 10;
 
 export default function kagiSearchExtension(pi: ExtensionAPI) {
   pi.registerTool({
@@ -38,46 +41,65 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       const response = await searchKagi(query, limit, signal);
       const results = response.data.filter((item) => item.t === 0);
       const related = response.data.filter((item) => item.t === 1).flatMap((item) => item.list);
-
-      if (results.length === 0) {
-        return {
-          content: [{ type: "text", text: `No results found for "${query}".` }],
-          details: { query, resultCount: 0, relatedCount: related.length, meta: response.meta },
-        };
+      let truncated = results.length > limit;
+      const clip = (text: string, max: number) => {
+        if (text.length <= max) return text;
+        truncated = true;
+        return text.slice(0, max - 1) + "…";
+      };
+      const retainedQuery = clip(query, 512);
+      // Only supported, bounded metadata enters the agent context. The transport
+      // helper still validates and returns the complete response to other callers.
+      const meta: KagiApiMeta | undefined = response.meta ? {} : undefined;
+      if (meta && response.meta) {
+        for (const key of ["id", "node"] as const) {
+          const value = response.meta[key];
+          if (value !== undefined) meta[key] = typeof value === "string" ? clip(value, 256) : value;
+        }
+        for (const key of ["ms", "api_balance"] as const) {
+          if (response.meta[key] !== undefined) meta[key] = response.meta[key];
+        }
+        if (Object.keys(response.meta).some((key) => !["id", "node", "ms", "api_balance"].includes(key))) truncated = true;
       }
 
-      const lines: string[] = [];
-      lines.push(`# Kagi search: ${query}`);
-      lines.push("");
-
-      results.forEach((result, index) => {
-        lines.push(`${index + 1}. ${result.title}`);
-        lines.push(`   URL: ${result.url}`);
-        if (result.snippet) {
-          lines.push(`   Snippet: ${result.snippet}`);
-        }
-        const published = formatPublishedDate(result.published);
-        if (published) {
-          lines.push(`   Published: ${published}`);
-        }
-        lines.push("");
-      });
-
-      if (related.length > 0) {
-        lines.push("Related searches:");
-        for (const term of related) {
-          lines.push(`- ${term}`);
-        }
+      const lines: string[] = [`# Kagi search: ${retainedQuery}`, ""];
+      const urls: string[] = [];
+      let remaining = RESULT_TEXT_MAX_CHARS;
+      for (const result of results.slice(0, limit)) {
+        // Preserve complete usable URLs rather than returning broken prefixes.
+        if (result.url.length > 2048) { truncated = true; continue; }
+        const row = [`${urls.length + 1}. ${clip(result.title, 512)}`, `   URL: ${result.url}`];
+        if (result.snippet) row.push(`   Snippet: ${clip(result.snippet, 2048)}`);
+        const published = formatPublishedDate(typeof result.published === "string" ? clip(result.published, 64) : result.published);
+        if (published) row.push(`   Published: ${published}`);
+        const text = row.join("\n") + "\n\n";
+        if (text.length > remaining) { truncated = true; break; }
+        remaining -= text.length;
+        lines.push(...row, "");
+        urls.push(result.url);
       }
+
+      const retainedRelated = urls.length ? related.slice(0, RELATED_MAX_COUNT).map((term) => clip(term, 128)) : [];
+      if (retainedRelated.length < related.length) truncated = true;
+      if (retainedRelated.length) {
+        lines.push("Related searches:", ...retainedRelated.map((term) => `- ${term}`));
+      }
+      let text = urls.length ? lines.join("\n").trim() : results.length
+        ? `No results retained for "${retainedQuery}" within the output limits.`
+        : `No results found for "${retainedQuery}".`;
+      if (truncated) text += "\n\n[Search output truncated.]";
 
       return {
-        content: [{ type: "text", text: lines.join("\n").trim() }],
+        content: [{ type: "text", text }],
         details: {
-          query,
-          resultCount: results.length,
-          relatedCount: related.length,
-          meta: response.meta,
-          urls: results.map((result) => result.url),
+          query: retainedQuery,
+          resultCount: urls.length,
+          relatedCount: retainedRelated.length,
+          originalResultCount: results.length,
+          originalRelatedCount: related.length,
+          truncated,
+          meta,
+          urls,
         },
       };
     },
