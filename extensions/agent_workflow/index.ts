@@ -10,6 +10,8 @@ import { Type } from "typebox";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
 import { resolveAgentModel, type ModelRef } from "./model_resolution.js";
 
+const PROGRESS_FAILURE = new Error("Agent workflow progress delivery failed; retry the task.");
+
 const MAX_PROTOCOL_LINE_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
@@ -477,7 +479,7 @@ async function runSingleAgent(
         resolve(code);
       };
       const terminate = () => {
-        if (settled || closed || killTimer) return;
+        if (settled || killTimer) return;
         signalGroup("SIGTERM");
         killTimer = setTimeout(() => {
           signalGroup("SIGKILL");
@@ -487,11 +489,12 @@ async function runSingleAgent(
       };
 
       const killProc = () => {
-        aborted = true;
+        if (signal?.reason === PROGRESS_FAILURE) currentResult.errorMessage = PROGRESS_FAILURE.message;
+        else aborted = true;
         terminate();
       };
       const failProtocol = (message: string) => {
-        if (protocolError) return;
+        if (protocolError || signal?.reason === PROGRESS_FAILURE) return;
         protocolError = true;
         buffer = "";
         currentResult.errorMessage = message;
@@ -546,7 +549,7 @@ async function runSingleAgent(
       };
 
       proc.stdout.on("data", (chunk) => {
-        if (protocolError) return;
+        if (protocolError || signal?.reason === PROGRESS_FAILURE) return;
         const bytes: Buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
         let offset = 0;
         while (offset < bytes.length) {
@@ -565,7 +568,7 @@ async function runSingleAgent(
           }
           if (newline !== -1) {
             processLine(buffer);
-            if (protocolError) return;
+            if (protocolError || signal?.reason === PROGRESS_FAILURE) return;
             buffer = "";
             lineBytes = 0;
           }
@@ -596,7 +599,7 @@ async function runSingleAgent(
           currentResult.stderr = encodedStderr.subarray(offset).toString("utf8");
           warnOnce("Agent stderr truncated to its last 64 KiB.");
         }
-        if (!protocolError) {
+        if (!protocolError && signal?.reason !== PROGRESS_FAILURE) {
           try { buffer += decoder.decode(); }
           catch { failProtocol("Agent protocol contains incomplete UTF-8."); }
           if (!protocolError && buffer.trim()) processLine(buffer);
@@ -606,7 +609,7 @@ async function runSingleAgent(
         } else if (code === null) {
           currentResult.errorMessage = `${currentResult.errorMessage ? currentResult.errorMessage + " " : ""}Agent subprocess closed without an exit code. Output may be incomplete.`;
         }
-        closedCode = protocolError || closeSignal ? 1 : (code ?? 1);
+        closedCode = protocolError || signal?.reason === PROGRESS_FAILURE || closeSignal ? 1 : (code ?? 1);
         // close can precede descendant exit when descendants redirected their pipes.
         if (killTimer && signalGroup(0)) return;
         finish(closedCode);
@@ -688,6 +691,14 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
     parameters: AgentWorkflowParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const progress = new AbortController();
+      const deliverUpdate = onUpdate;
+      signal = signal ? AbortSignal.any([signal, progress.signal]) : progress.signal;
+      onUpdate = deliverUpdate ? (partial) => {
+        if (progress.signal.aborted) return;
+        try { deliverUpdate(partial); }
+        catch { progress.abort(PROGRESS_FAILURE); }
+      } : undefined;
       const discovery = discoverBundledAgents();
       const agents = discovery.agents;
       const availableModels: ModelRef[] = ctx.modelRegistry.getAvailable().map((model) => ({
@@ -823,6 +834,11 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           );
           allResults[index] = result;
           emitParallelUpdate();
+          // Completion updates can fail after this child has already closed.
+          if (progress.signal.aborted) {
+            result.exitCode = 1;
+            result.errorMessage = PROGRESS_FAILURE.message;
+          }
           return result;
         }, signal, (taskItem) => abortedResult(taskItem.agent, taskItem.task));
 

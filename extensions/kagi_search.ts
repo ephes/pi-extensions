@@ -93,6 +93,13 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         return new Text(theme.fg("accent", "Searching Kagi..."), 0, 0);
       }
 
+      if (result.isError) {
+        const diagnostic = result.content.find((item) => item.type === "text")?.text ?? "";
+        const limit = expanded ? 640 : 160;
+        const preview = diagnostic.length > limit ? `${diagnostic.slice(0, limit)}...` : diagnostic;
+        return new Text(theme.fg("error", "Kagi search failed") + (preview ? "\n" + theme.fg("dim", preview) : ""), 0, 0);
+      }
+
       const details = (result.details ?? {}) as { resultCount?: number; relatedCount?: number };
       const summary = `${details.resultCount ?? 0} results` + ((details.relatedCount ?? 0) > 0 ? `, ${details.relatedCount} related` : "");
 
