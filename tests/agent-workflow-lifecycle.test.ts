@@ -54,7 +54,10 @@ function setup(t: TestContext) {
   const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
   const render = (result: StubResult, expanded: boolean) =>
     tool.renderResult(result, { expanded, isPartial: false }, plainTheme).render(200).map((line) => line.trimEnd()).join("\n");
-  return { children, execute, render, tasks, spawnOptions };
+  const executeChain = (chain: Array<{ agent: string; task: string }>, update?: (result: StubResult) => void) => tool.execute("test", { chain }, undefined, update, {
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+  });
+  return { children, execute, executeChain, render, tasks, spawnOptions };
 }
 
 test("abort escalates an unclosed child despite killed=true and waits for close", async (t) => {
@@ -371,9 +374,8 @@ for (const oversized of [false, true]) {
     children[1].emit("close", 0, null);
     const result = await run;
     assert.equal(Boolean(result.isError), false);
-    const handedOff = oversized
-      ? "[Previous agent workflow output truncated from " + previous.length + " to 12000 characters.]\n\n" + previous.slice(0, 12000)
-      : previous;
+    const notice = `[Previous agent workflow output truncated from ${previous.length} to 6000 characters.]\n\n`;
+    const handedOff = oversized ? notice + previous.slice(0, 6000 - notice.length) : previous;
     assert.equal(tasks[1], `Task: prefix ${handedOff} middle ${handedOff} suffix`);
   });
 }
@@ -609,7 +611,8 @@ for (const oversized of [false, true]) {
     children[1].emit("close", 0, null);
     const result = await run;
     assert.deepEqual(result.content, [{ type: "text", text: "Warnings:\n- Requested model anthropic/claude-opus-4-6 is unavailable; falling back to openai/gpt-5.4.\n\n" + text }]);
-    const capped = oversized ? `[Previous agent workflow output truncated from ${text.length} to 12000 characters.]\n\n${text.slice(0, 12000)}` : text;
+    const notice = `[Previous agent workflow output truncated from ${text.length} to 12000 characters.]\n\n`;
+    const capped = oversized ? notice + text.slice(0, 12000 - notice.length) : text;
     assert.equal(tasks[1], `Task: ${capped}`);
   });
 }
@@ -969,7 +972,7 @@ for (const mode of ["single", "chain", "parallel"] as const) {
     const result = await run;
     assert.equal(result.isError, undefined);
     assert.equal(result.details.results[0].usage.turns, 270);
-    assert.equal(result.details.results[0].messages.length, 256);
+    assert.equal(result.details.results[0].messages.length, mode === "chain" ? 255 : 256);
     assert.deepEqual(snapshots.map(snapshot => JSON.stringify(snapshot)), originals);
     assert.ok(result.details.results.every(item => item.exitCode === 0));
   });
@@ -996,4 +999,138 @@ test("model provenance distinguishes requested, selected and observed across tur
     assert.equal(provenance.model, observed ?? "openai/gpt-5.4");
     assert.equal(provenance.warnings.some(warning => /different from the selected model/.test(warning)), models.includes("other-model"));
   }
+});
+
+for (const eof of [false, true]) {
+  test(`deep consumed tool arguments fail with cleanup (EOF=${eof})`, async (t) => {
+    const { children, execute, render } = setup(t);
+    const originalRemove = fs.rmSync;
+    let removed = false;
+    t.mock.method(fs, "rmSync", (...args: Parameters<typeof fs.rmSync>) => { removed = true; return originalRemove(...args); });
+    syncBuiltinESMExports();
+    const run = execute();
+    const child = children[0];
+    const line = '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"id","name":"test","arguments":' + '{"x":'.repeat(10000) + '0' + '}'.repeat(10000) + '}]}}';
+    assert.ok(Buffer.byteLength(line) < 1024 * 1024);
+    try {
+      assert.doesNotThrow(() => child.stdout.emit("data", line + (eof ? "" : "\n")));
+    } finally { child.emit("close", 0, null); }
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.deepEqual(result.details.results[0].messages, []);
+    assert.match(JSON.stringify(result), /malformed message/);
+    assert.equal(removed, true);
+    assert.deepEqual(child.signals, eof ? [] : ["SIGTERM"]);
+    assert.doesNotThrow(() => { render(result, true); });
+  });
+}
+
+test("ordinary nested tool arguments remain renderable", async (t) => {
+  const { children, execute, render } = setup(t);
+  const run = execute();
+  const argumentsValue = { items: [{ filters: { nested: [1, { enabled: true }] } }] };
+  children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content: [
+    { type: "toolCall", id: "id", name: "invented", arguments: argumentsValue },
+    { type: "text", text: "answer" },
+  ], stopReason: "stop" } }) + "\n");
+  children[0].emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.match(render(result, true), /invented/);
+});
+
+test("chain budgets span steps and repeated previous placeholders", async (t) => {
+  const { children, executeChain, tasks } = setup(t);
+  const steps = 10;
+  type BulkResult = { messages: unknown[]; task: string; stderr: string };
+  const measure = (results: BulkResult[]) => ({
+    messages: results.reduce((sum, result) => sum + result.messages.length, 0),
+    bytes: results.reduce((sum, result) => sum + Buffer.byteLength(JSON.stringify(result.messages)), 0),
+    taskChars: results.reduce((sum, result) => sum + result.task.length, 0),
+    stderrBytes: results.reduce((sum, result) => sum + Buffer.byteLength(result.stderr), 0),
+  });
+  const updates: ReturnType<typeof measure>[] = [];
+  const run = executeChain(Array.from({ length: steps }, () => ({ agent: "implementer", task: "prefix {previous} middle {previous} suffix" })), partial => {
+    updates.push(measure(partial.details.results));
+  });
+  for (let index = 0; index < steps; index++) {
+    for (let turn = 0; turn < 6; turn++) children[index].stdout.emit("data", messageLine(`${index}-${turn}:` + "x".repeat(700000)));
+    children[index].stderr.emit("data", Buffer.from("é".repeat(50000)));
+    children[index].emit("close", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.equal(result.details.results.length, steps);
+  for (const measurement of [...updates, measure(result.details.results)]) {
+    assert.ok(measurement.messages <= 256);
+    assert.ok(measurement.bytes <= 4 * 1024 * 1024);
+    assert.ok(measurement.taskChars <= 12000);
+    assert.ok(measurement.stderrBytes <= 64 * 1024);
+  }
+  assert.ok(updates.length > steps);
+  assert.ok(result.details.results.every(item => item.exitCode === 0 && item.usage.turns === 6));
+  assert.match(result.content[0].text!, /9-5:/);
+  for (const task of tasks.slice(1)) assert.ok(task.length <= 12000 + "Task: prefix  middle  suffix".length);
+  const first = result.details.results[0] as typeof result.details.results[0] & { omitted: { messages: number; taskChars: number; stderrBytes: number } };
+  assert.ok(first.omitted.messages > 0);
+  assert.ok(first.omitted.taskChars > 0);
+  assert.ok(first.omitted.stderrBytes > 0);
+  assert.match(first.warnings.join(" "), /Chain result details truncated/);
+});
+
+test("handoff budget survives more placeholders than available characters", async (t) => {
+  const { children, executeChain, tasks } = setup(t);
+  const run = executeChain([{ agent: "implementer", task: "first" },
+    { agent: "implementer", task: "Do this: " + "{previous}".repeat(12001) }]);
+  children[0].stdout.emit("data", messageLine("hello"));
+  children[0].emit("close", 0, null);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  children[1].stdout.emit("data", messageLine("final answer"));
+  children[1].emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.equal(tasks[1], "Task: Do this: ");
+  const last = result.details.results[1] as typeof result.details.results[1] & { handoff: unknown };
+  assert.deepEqual(last.handoff, { sourceChars: 5, insertedChars: 0, truncated: true });
+});
+
+for (const singleStep of [false, true]) {
+  test(`current chain task-detail truncation is reported accurately (singleStep=${singleStep})`, async (t) => {
+    const { children, executeChain, tasks } = setup(t);
+    const task = singleStep ? "long caller task ".repeat(1000) : "Summarize: {previous}";
+    const run = executeChain(singleStep ? [{ agent: "implementer", task }] : [
+      { agent: "implementer", task: "first" }, { agent: "implementer", task },
+    ]);
+    if (!singleStep) {
+      children[0].stdout.emit("data", messageLine("x".repeat(13000)));
+      children[0].emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const child = children.at(-1)!;
+    child.stdout.emit("data", messageLine("preserved final answer"));
+    child.emit("close", 0, null);
+    const result = await run;
+    assert.equal(result.isError, undefined);
+    const text = result.content[0].text!;
+    assert.match(text, /Chain result details truncated/);
+    assert.doesNotMatch(text, /Earlier chain details omitted/);
+    assert.match(text, /preserved final answer/);
+    assert.equal(tasks.at(-1)!.length, "Task: ".length + (singleStep ? task.length : "Summarize: ".length + 12000));
+  });
+}
+
+test("small per-placeholder allowances retain source prefixes without fragmented notices", async (t) => {
+  const { children, executeChain, tasks } = setup(t);
+  const previous = "source-content-".repeat(100);
+  const run = executeChain([{ agent: "implementer", task: "first" },
+    { agent: "implementer", task: Array(200).fill("{previous}").join("|") }]);
+  children[0].stdout.emit("data", messageLine(previous));
+  children[0].emit("close", 0, null);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  children[1].stdout.emit("data", messageLine("final answer"));
+  children[1].emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.equal(tasks[1], "Task: " + Array(200).fill(previous.slice(0, 60)).join("|"));
 });

@@ -13,6 +13,8 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Bounded consumed protocol nesting and aggregate chain detail/handoff budgets.
+
 - [x] Detached progress snapshots and truthful requested/selected/observed model provenance.
 
 - [x] Strict UTF-8 Kagi response admission and credential-safe transport/body failures.

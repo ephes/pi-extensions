@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject deeply nested consumed protocol messages before serialization; share message/task/stderr retention budgets across chain steps and cap repeated handoff substitutions with omission metadata.
+
 - Detach workflow progress snapshots and distinguish requested, selected and assistant-reported model provenance with bounded mismatch warnings.
 
 - Reject malformed UTF-8 Kagi responses and keep transport/body-read diagnostics credential-safe.
