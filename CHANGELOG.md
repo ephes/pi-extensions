@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject overflowing aggregate agent usage and share a finite integer readable-output limit policy between helper and tool.
+
 - Enforce Kagi result counts locally and bound retained rows, related searches and metadata; preserve complete useful URLs and report original/retained counts and truncation
 
 - Block IPv6 site-local and private well-known NAT64 destinations before transport for literals and DNS answers; reject unsupported local-use NAT64 layouts

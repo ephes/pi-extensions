@@ -37,7 +37,7 @@ function setup(t: TestContext) {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  type StubResult = { isError?: boolean; content: Array<{ type: string; text?: string }>; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; stopReason?: string; errorMessage?: string; exitCode: number; agent: string; task: string; usage: { turns: number } }> } };
+  type StubResult = { isError?: boolean; content: Array<{ type: string; text?: string }>; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; stopReason?: string; errorMessage?: string; exitCode: number; agent: string; task: string; usage: { turns: number; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number } }> } };
   type StubComponent = { render: (width: number) => string[] };
   type StubTool = {
     execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: ((result: StubResult) => void) | undefined, ctx: unknown) => Promise<StubResult>;
@@ -248,13 +248,16 @@ test("stderr tail and message detail retention have separate byte and count budg
   const child = children[0];
   for (let i = 0; i < 300; i++) {
     child.stderr.emit("data", Buffer.alloc(10000, 65));
-    child.stdout.emit("data", messageLine(`message-${i}`));
+    child.stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant",
+      content: [{ type: "text", text: `message-${i}` }], stopReason: "stop",
+      usage: { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, totalTokens: 14,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 } } } }) + "\n");
   }
   child.stderr.emit("data", Buffer.from("diagnostic tail"));
   child.emit("close", 0, null);
   const result = (await run).details.results[0];
   assert.equal(result.messages.length, 256);
-  assert.equal(result.usage.turns, 300);
+  assert.deepEqual(result.usage, { turns: 300, input: 600, output: 900, cacheRead: 1200, cacheWrite: 1500, cost: 300, contextTokens: 14 });
   assert.ok(Buffer.byteLength(result.stderr) <= 64 * 1024);
   assert.ok(result.stderr.endsWith("diagnostic tail"));
   assert.equal(result.warnings.length, 2);
@@ -889,3 +892,49 @@ test("parallel completion progress failure is a failed result after reaping sibl
   assert.equal(updates, 1);
   assert.match(result.details.results[0].errorMessage!, /progress delivery failed/);
 });
+
+for (const field of ["input", "output", "cacheRead", "cacheWrite", "cost"] as const) {
+  test(`aggregate usage ${field} overflow fails and stops chain handoff`, async (t) => {
+    const { children, execute } = setup(t);
+    const run = execute(undefined, true);
+    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    if (field === "cost") usage.cost.total = Number.MAX_VALUE;
+    else usage[field] = Number.MAX_VALUE;
+    const line = JSON.stringify({ type: "message_end", message: { role: "assistant",
+      content: [{ type: "text", text: "answer" }], stopReason: "stop", usage } }) + "\n";
+    children[0].stdout.emit("data", line + line);
+    const signals = [...children[0].signals];
+    children[0].emit("close", 0, null);
+    // Finish an unexpected handoff too, so a regression cannot hang the suite.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (children[1]) { children[1].stdout.emit("data", messageLine("unexpected")); children[1].emit("close", 0, null); }
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.equal(children.length, 1);
+    assert.match(JSON.stringify(result), /usage.*overflow/i);
+    assert.ok(Object.values(result.details.results[0].usage).every(Number.isFinite));
+    assert.equal(JSON.stringify(result.details.results[0].usage).includes("null"), false);
+  });
+}
+
+for (const parallel of [false, true]) {
+  test(`cross-agent usage overflow renders a controlled diagnostic (parallel=${parallel})`, async (t) => {
+    const { children, execute, render } = setup(t);
+    const run = execute(undefined, !parallel, "test", parallel);
+    for (let index = 0; index < (parallel ? 8 : 2); index++) {
+      const usage = { input: Number.MAX_VALUE, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: Number.MAX_VALUE } };
+      children[index].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "answer" }], stopReason: "stop", usage } }) + "\n");
+      children[index].emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const result = await run;
+    for (const expanded of [false, true]) {
+      const text = render(result, expanded);
+      assert.doesNotMatch(text, /Infinity|NaN/);
+      assert.match(text, /Usage total exceeds numeric range/);
+    }
+  });
+}
