@@ -46,6 +46,8 @@ interface SingleResult {
   stopReason?: string;
   errorMessage?: string;
   step?: number;
+  omitted?: { messages: number; taskChars: number; stderrBytes: number };
+  handoff?: { sourceChars: number; insertedChars: number; truncated: boolean };
 }
 
 interface AgentWorkflowDetails {
@@ -159,6 +161,57 @@ function formatToolCall(toolName: string, args: Record<string, unknown>, themeFg
   }
 }
 
+// Keep bulk chain details bounded while preserving one outcome record per step.
+function boundChainDetails(results: SingleResult[]): void {
+  let messageBytes = MAX_MESSAGE_BYTES;
+  let messages = MAX_MESSAGES;
+  let taskChars = MAX_CHAIN_CONTEXT_CHARS;
+  let stderrBytes = MAX_STDERR_BYTES;
+  for (let index = results.length - 1; index >= 0; index -= 1) {
+    const result = results[index];
+    let kept = 0;
+    for (let at = result.messages.length - 1; at >= 0; at -= 1) {
+      const size = Buffer.byteLength(JSON.stringify(result.messages[at]));
+      if (messages === 0 || size > messageBytes) { messages = 0; break; }
+      messageBytes -= size;
+      messages -= 1;
+      kept += 1;
+    }
+    const omittedMessages = result.messages.length - kept;
+    result.messages = result.messages.slice(omittedMessages);
+    const omittedTaskChars = Math.max(0, result.task.length - taskChars);
+    result.task = result.task.slice(0, taskChars);
+    taskChars -= result.task.length;
+    const stderr = Buffer.from(result.stderr);
+    let start = Math.max(0, stderr.length - stderrBytes);
+    while (start < stderr.length && (stderr[start] & 0xc0) === 0x80) start += 1;
+    result.stderr = stderr.subarray(start).toString("utf8");
+    stderrBytes -= stderr.length - start;
+    if (omittedMessages || omittedTaskChars || start) {
+      const omitted = result.omitted ?? { messages: 0, taskChars: 0, stderrBytes: 0 };
+      result.omitted = {
+        messages: omitted.messages + omittedMessages,
+        taskChars: omitted.taskChars + omittedTaskChars,
+        stderrBytes: omitted.stderrBytes + start,
+      };
+      const warning = "Chain result details truncated (4 MiB / 256 messages, 12,000 task characters, 64 KiB stderr); see per-step omitted counts.";
+      if (!result.warnings.includes(warning)) result.warnings.push(warning);
+    }
+  }
+}
+
+// Parsed JSON is acyclic; inspect depth iteratively before serialization or cloning.
+function hasBoundedNesting(value: unknown): boolean {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  while (pending.length) {
+    const { value: current, depth } = pending.pop()!;
+    if (current === null || typeof current !== "object") continue;
+    if (depth > 64) return false;
+    for (const child of Object.values(current)) pending.push({ value: child, depth: depth + 1 });
+  }
+  return true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -166,7 +219,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // Validate the protocol fields consumed by output, display and usage accounting.
 // Additional provider metadata is deliberately left alone.
 function isConsumedMessage(value: unknown): value is Message {
-  if (!isRecord(value)) return false;
+  if (!isRecord(value) || !hasBoundedNesting(value)) return false;
   const { role, content } = value;
   if (role !== "assistant" && role !== "user" && role !== "toolResult") return false;
   if (role === "user" && typeof content === "string") return true;
@@ -312,16 +365,11 @@ function writePromptToTempFile(agentName: string, prompt: string): { dir: string
   return { dir: tempDir, filePath };
 }
 
-function truncatePreviousOutput(previousOutput: string): string {
-  if (previousOutput.length <= MAX_CHAIN_CONTEXT_CHARS) {
-    return previousOutput;
-  }
-
-  const preserved = previousOutput.slice(0, MAX_CHAIN_CONTEXT_CHARS);
-  return [
-    `[Previous agent workflow output truncated from ${previousOutput.length} to ${MAX_CHAIN_CONTEXT_CHARS} characters.]`,
-    preserved,
-  ].join("\n\n");
+function truncatePreviousOutput(previousOutput: string, limit: number): string {
+  if (previousOutput.length <= limit) return previousOutput;
+  const notice = `[Previous agent workflow output truncated from ${previousOutput.length} to ${limit} characters.]\n\n`;
+  if (limit <= notice.length) return previousOutput.slice(0, limit);
+  return notice + previousOutput.slice(0, limit - notice.length);
 }
 
 async function runSingleAgent(
@@ -716,7 +764,12 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       signal = signal ? AbortSignal.any([signal, progress.signal]) : progress.signal;
       onUpdate = deliverUpdate ? (partial) => {
         if (progress.signal.aborted) return;
-        try { deliverUpdate(structuredClone(partial)); }
+        try {
+          const snapshot = structuredClone(partial);
+          const details = snapshot.details as AgentWorkflowDetails | undefined;
+          if (details?.mode === "chain") boundChainDetails(details.results);
+          deliverUpdate(snapshot);
+        }
         catch { progress.abort(PROGRESS_FAILURE); }
       } : undefined;
       const discovery = discoverBundledAgents();
@@ -758,12 +811,16 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
         for (let index = 0; index < params.chain.length; index += 1) {
           const step = params.chain[index];
-          const context = truncatePreviousOutput(previousOutput);
+          const placeholders = step.task.match(/\{previous\}/g)?.length ?? 0;
+          const context = truncatePreviousOutput(previousOutput, Math.floor(MAX_CHAIN_CONTEXT_CHARS / Math.max(1, placeholders)));
+          const handoff = { sourceChars: previousOutput.length, insertedChars: context.length * placeholders,
+            truncated: placeholders > 0 && context.length < previousOutput.length };
           const taskWithContext = step.task.replace(/\{previous\}/g, () => context);
           const chainUpdate: OnUpdateCallback | undefined = onUpdate
             ? (partial) => {
                 const current = partial.details?.results[0];
                 if (!current) return;
+                current.handoff = handoff;
                 onUpdate({
                   content: partial.content,
                   details: makeDetails("chain")([...results, current]),
@@ -784,7 +841,10 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             chainUpdate,
             makeDetails("chain"),
           );
+          result.handoff = handoff;
+          previousOutput = getFinalOutput(result.messages);
           results.push(result);
+          boundChainDetails(results);
 
           const isError = !isSuccessful(result);
           if (isError) {
@@ -795,7 +855,6 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             };
           }
 
-          previousOutput = getFinalOutput(result.messages);
         }
 
         return {
