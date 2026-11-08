@@ -262,3 +262,48 @@ test("registered search reports when every result URL is too large", async (t) =
   assert.match(result.content[0].text, /No results retained.*output limits/);
   assert.doesNotMatch(result.content[0].text, /No results found/);
 });
+
+for (const field of ["title", "url", "truncated"] as const) {
+  test(`malformed UTF-8 in successful Kagi ${field} publishes no results`, async (t) => {
+    const prefix = field === "url" ? '{"data":[{"t":0,"title":"title","url":"https://example.com/' : '{"data":[{"t":0,"url":"https://example.com/","title":"';
+    const bytes = Buffer.concat([Buffer.from(prefix), Buffer.from(field === "truncated" ? [0xe2, 0x82] : [0xff]),
+      ...(field === "truncated" ? [] : [Buffer.from('"}]}')])]);
+    t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({
+      start(controller) { for (const byte of bytes) controller.enqueue(Uint8Array.of(byte)); controller.close(); },
+    })));
+    await assert.rejects(searchKagi("query"), /UTF-8/);
+    await assert.rejects(registeredSearch().execute("test", { query: "query" }, undefined, undefined), /UTF-8/);
+  });
+}
+
+for (const phase of ["fetch", "reader"] as const) {
+  test(`Kagi ${phase} failure has bounded credential-safe diagnostics`, async (t) => {
+    const privateError = new Error("Authorization: Bot test-key " + "x".repeat(10000), { cause: new Error("test-key") });
+    t.mock.method(globalThis, "fetch", async () => {
+      if (phase === "fetch") throw privateError;
+      return new Response(new ReadableStream({ start(controller) { controller.error(privateError); } }));
+    });
+    for (const run of [() => searchKagi("query"), () => registeredSearch().execute("test", { query: "query" }, undefined, undefined)]) {
+      await assert.rejects(run(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.cause, undefined);
+        assert.ok(error.message.length < 150);
+        assert.doesNotMatch(error.stack! + JSON.stringify(error), /test-key|Authorization/);
+        assert.match(error.message, phase === "fetch" ? /transport/ : /read response/);
+        return true;
+      });
+    }
+  });
+}
+
+test("malformed UTF-8 HTTP error bodies retain status and redact credentials", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response(Buffer.concat([
+    Buffer.from("proxy echoed test-key "), Buffer.from([0xff]),
+  ]), { status: 502 }));
+  await assert.rejects(searchKagi("query"), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /HTTP 502: proxy echoed \[redacted\]/);
+    assert.doesNotMatch(error.stack!, /test-key/);
+    return true;
+  });
+});

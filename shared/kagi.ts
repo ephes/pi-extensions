@@ -75,7 +75,9 @@ function validateResponse(value: unknown): KagiSearchResponse {
 
 async function readBody(response: Response, signal: AbortSignal): Promise<string> {
   if (!response.body) return "";
-  const reader = response.body.getReader();
+  let reader: ReadableStreamDefaultReader<Uint8Array>;
+  try { reader = response.body.getReader(); }
+  catch { throw new Error("Kagi API could not read response; please retry."); }
   const cancel = () => { void reader.cancel().catch(() => {}); };
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) cancel();
@@ -83,7 +85,9 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
   let size = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await reader.read().catch(() => {
+        throw new Error("Kagi API could not read response; please retry.");
+      });
       if (done) break;
       size += value.byteLength;
       if (size > KAGI_RESPONSE_MAX_BYTES) {
@@ -97,7 +101,8 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    return new TextDecoder().decode(bytes);
+    try { return new TextDecoder("utf-8", { fatal: response.ok }).decode(bytes); }
+    catch { throw new Error("Kagi API response contains invalid UTF-8."); }
   } finally {
     signal.removeEventListener("abort", cancel);
     // Cancellation must not delay the deadline or the byte-limit error.
@@ -147,6 +152,8 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
         "User-Agent": USER_AGENT,
       },
       signal: combined,
+    }).catch(() => {
+      throw new Error("Kagi API transport failed; please retry.");
     });
     // A non-cooperative transport may deliver headers after cancellation.
     if (combined.aborted) {

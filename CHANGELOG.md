@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject malformed UTF-8 Kagi responses and keep transport/body-read diagnostics credential-safe.
+
 - Reject overflowing aggregate agent usage and share a finite integer readable-output limit policy between helper and tool.
 
 - Enforce Kagi result counts locally and bound retained rows, related searches and metadata; preserve complete useful URLs and report original/retained counts and truncation
