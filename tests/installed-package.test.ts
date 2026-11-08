@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
+import { EventEmitter } from "node:events";
 import net from "node:net";
 import tls from "node:tls";
 import { DefaultResourceLoader, SettingsManager, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
@@ -60,6 +61,7 @@ async function installedSmoke(t: import("node:test").TestContext, damage?: strin
   for (const prompt of prompts.prompts) assert.ok(prompt.content.trim());
   for (const mock of [...blockedProcesses, ...blockedConnections]) assert.equal(mock.mock.callCount(), 0);
   assert.equal(fetch.mock.callCount(), 0);
+  return { workflow, installed, cwd };
 }
 
 test("installed package loads each tool once and discovers bundled assets offline", async (t) => {
@@ -81,3 +83,77 @@ for (const damage of ["extensions/kagi_search.ts", "shared/web.ts", "agents/revi
     });
   });
 }
+
+
+function fakeAgents(t: import("node:test").TestContext, inspect: (args: string[]) => void) {
+  // Model the supported process-group platform; never launch or signal a real agent.
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "linux" });
+  t.after(() => Object.defineProperty(process, "platform", platform));
+  let spawns = 0;
+  t.mock.method(childProcess, "spawn", (_command: string, args: string[]) => {
+    spawns += 1;
+    inspect(args);
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+    queueMicrotask(() => {
+      child.stdout.emit("data", JSON.stringify({ type: "message_end", message: {
+        role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop",
+      } }) + "\n");
+      child.emit("close", 0, null);
+    });
+    return child;
+  });
+  syncBuiltinESMExports();
+  return () => spawns;
+}
+
+const fakeContext = (cwd: string) => ({
+  cwd, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+}) as unknown as ExtensionToolContext;
+
+test("installed tool policies reject empty and unknown lists without default-capability launches", async (t) => {
+  const { workflow, installed, cwd } = await installedSmoke(t);
+  const argv: string[][] = [];
+  const spawns = fakeAgents(t, (args) => argv.push(args));
+  for (const tools of ['""', '"  "', '", ,"', 'read, unknown', '*', '+bash']) {
+    fs.writeFileSync(path.join(installed, "agents/policy.md"), `---\nname: policy\ndescription: synthetic\ntools: ${tools}\n---\npolicy`);
+    const result = await workflow.definition.execute("policy", { agent: "policy", task: "test" }, undefined, undefined, fakeContext(cwd));
+    assert.equal(result.isError, true, `must reject ${tools}`);
+    assert.match(JSON.stringify(result), /Invalid bundled agent definition: policy.md/);
+  }
+  assert.equal(spawns(), 0);
+  for (const [agent, tools] of [
+    ["reviewer", "read,grep,find,ls,bash"], ["implementer", "read,bash,edit,write"],
+  ]) {
+    const result = await workflow.definition.execute("valid", { agent, task: "test" }, undefined, undefined, fakeContext(cwd));
+    assert.equal(result.isError, undefined);
+    const args = argv.at(-1)!;
+    assert.equal(args[args.indexOf("--tools") + 1], tools);
+  }
+  fs.writeFileSync(path.join(installed, "agents/policy.md"), "---\nname: policy\ndescription: synthetic\n---\npolicy");
+  await workflow.definition.execute("omitted", { agent: "policy", task: "test" }, undefined, undefined, fakeContext(cwd));
+  assert.equal(argv.at(-1)!.includes("--tools"), false, "omitted tools retain host defaults");
+});
+
+test("installed large literal task travels in a private file outside argv and is cleaned", async (t) => {
+  const { workflow, installed, cwd } = await installedSmoke(t);
+  const task = "private-task-sentinel 🦊 $& $` $' {previous}\n".repeat(32000) + "  \n";
+  let taskPath = "";
+  const spawns = fakeAgents(t, (args) => {
+    assert.ok(!args.some((arg) => arg.includes("private-task-sentinel")));
+    assert.ok(args.every((arg) => Buffer.byteLength(arg) < 4096));
+    assert.ok(args.at(-1)!.startsWith("@"));
+    taskPath = args.at(-1)!.slice(1);
+    assert.equal(fs.readFileSync(taskPath, "utf8"), `Task: ${task}`);
+    assert.equal(fs.statSync(taskPath).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(path.dirname(taskPath)).mode & 0o777, 0o700);
+  });
+  // Also cover a definition with no system prompt.
+  fs.writeFileSync(path.join(installed, "agents/plain.md"), "---\nname: plain\ndescription: synthetic\ntools: read\n---\n");
+  for (const agent of ["implementer", "plain"]) {
+    const result = await workflow.definition.execute("large", { agent, task }, undefined, undefined, fakeContext(cwd));
+    assert.equal(result.isError, undefined);
+    assert.equal(fs.existsSync(path.dirname(taskPath)), false);
+  }
+  assert.equal(spawns(), 2);
+});

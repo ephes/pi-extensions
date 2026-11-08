@@ -18,6 +18,9 @@ export interface AgentDiscoveryResult {
   diagnostics: string[];
 }
 
+// Delegates disable extensions; accept only explicit built-in tool names.
+const TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
+
 const AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../agents");
 
 export function discoverBundledAgents(): AgentDiscoveryResult {
@@ -58,10 +61,15 @@ export function discoverBundledAgents(): AgentDiscoveryResult {
         .map((tool) => tool.trim())
         .filter(Boolean);
 
+      if (tools && (tools.length === 0 || tools.some((tool) => !TOOL_NAMES.has(tool)))) {
+        diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
+        continue;
+      }
+
       agents.push({
         name: frontmatter.name,
         description: frontmatter.description,
-        tools: tools && tools.length > 0 ? tools : undefined,
+        tools,
         model: frontmatter.model as string | undefined,
         systemPrompt: body.trim(),
         filePath,

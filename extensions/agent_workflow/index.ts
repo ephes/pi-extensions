@@ -346,12 +346,14 @@ function abortedResult(agent: string, task: string, step?: number): SingleResult
   };
 }
 
-function writePromptToTempFile(agentName: string, prompt: string): { dir: string; filePath: string } {
+function writePromptToTempFile(agentName: string, prompt: string, task: string): { dir: string; filePath: string; taskPath: string } {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-workflow-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tempDir, `prompt-${safeName}.md`);
+  const taskPath = path.join(tempDir, "task.md");
   try {
     fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+    fs.writeFileSync(taskPath, `Task: ${task}`, { encoding: "utf-8", mode: 0o600 });
   } catch (error) {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -362,7 +364,7 @@ function writePromptToTempFile(agentName: string, prompt: string): { dir: string
     }
     throw new Error("Unable to create agent prompt file.", { cause: error });
   }
-  return { dir: tempDir, filePath };
+  return { dir: tempDir, filePath, taskPath };
 }
 
 function truncatePreviousOutput(previousOutput: string, limit: number): string {
@@ -466,19 +468,17 @@ async function runSingleAgent(
       currentResult.errorMessage = "Agent workflows require POSIX process groups; Windows is not supported.";
       return currentResult;
     }
-    if (agent.systemPrompt.trim()) {
-      const temp = writePromptToTempFile(agent.name, agent.systemPrompt);
-      tempPromptDir = temp.dir;
-      tempPromptPath = temp.filePath;
-      args.push("--append-system-prompt", tempPromptPath);
-    }
+    const temp = writePromptToTempFile(agent.name, agent.systemPrompt, task);
+    tempPromptDir = temp.dir;
+    tempPromptPath = temp.filePath;
+    if (agent.systemPrompt.trim()) args.push("--append-system-prompt", tempPromptPath);
 
     // Defensive guard at the spawn boundary; prompt preparation is synchronous.
     if (signal?.aborted) {
       if (abortAsResult) return abortedResult(agentName, task, step);
       throw new Error("Agent workflow was aborted.");
     }
-    args.push(`Task: ${task}`);
+    args.push(`@${temp.taskPath}`);
 
     const exitCode = await new Promise<number>((resolve) => {
       const proc = spawn("pi", args, {
