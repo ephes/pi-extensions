@@ -13,6 +13,8 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Strict UTF-8 Kagi response admission and credential-safe transport/body failures.
+
 - [x] Finite aggregate agent usage and one bounded readable-output limit policy.
 
 - [x] Offline `agent_workflow` test for a parallel-mode protocol failure in one agent, covering result order, per-agent errors and `renderResult` (collapsed and expanded).
