@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Detach workflow progress snapshots and distinguish requested, selected and assistant-reported model provenance with bounded mismatch warnings.
+
 - Reject malformed UTF-8 Kagi responses and keep transport/body-read diagnostics credential-safe.
 
 - Reject overflowing aggregate agent usage and share a finite integer readable-output limit policy between helper and tool.

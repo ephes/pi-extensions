@@ -66,6 +66,13 @@ If an exact bundled model is unavailable, `agent_workflow` now falls back in thi
 
 If no authenticated Pi models are available at all, the delegated run fails early with a clear `/login` or API key hint.
 
+Result provenance separates `requestedModel` (agent frontmatter), `selectedModel`
+(the resolved CLI model), and `observedModel` (the latest nonempty model reported
+by an assistant event). `model` uses the latest observation, falling back to the
+selected model until an observation arrives. Missing observations do not erase
+prior ones. Provider-qualified selections also match their bare model ID. A
+reported mismatch adds one bounded warning; it never changes model selection.
+
 If you want deterministic model pinning instead of fallback behavior, edit the frontmatter in `agents/*.md` to match your environment.
 
 ## Requirements
@@ -168,6 +175,7 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
 - Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts. Every placeholder receives the same literal prior output, including dollar syntax and any `{previous}` text in that output; inserted text is not expanded again.
 - Parallel cancellation stops claiming queued tasks; unstarted tasks create no prompt files or children and appear as aborted in the complete, ordered summary. Already-cancelled single and chain runs fail before prompt creation.
+- Agent-workflow progress callbacks receive detached snapshots of result messages, usage, warnings and metadata. Observers may retain, mutate or freeze them; later updates and final results keep their own containers. Snapshots follow the same retention limits as result details.
 - A throwing agent-workflow progress callback fails the workflow with a bounded diagnostic, suppresses subsequent updates and cancels active tasks. Child groups (including remaining descendants) are terminated and reaped before prompt cleanup, even when the callback fails during EOF or parallel completion. Queued tasks are not launched; observer exception text is not copied into diagnostics.
 - Agent workflows require POSIX process groups (Linux/macOS); Windows fails before prompt creation or launch. Each child starts in its own process group. Cancellation and protocol failure send SIGTERM to that group, escalate to SIGKILL after five seconds if it remains, and wait for child close before cleanup. Escalation also covers descendants that outlive the direct child or hold its output pipes open; descendants must stay in the inherited group. The extension host's group is never signalled. Detached groups do not receive terminal signals addressed to the host; cancel workflows before stopping it. An abrupt host exit (including a host crash or kill) can leave delegated processes running; automatic cleanup after host death is not provided. Normal child exit does not terminate remaining descendants, so agents must finish or stop their background work before returning. Signal termination or a missing exit code fails the run and stops chained handoffs.
 - A successful run needs both exit code zero and a final assistant `message_end` with `stopReason: "stop"` and nonblank text. Empty output, tool-only output, missing status, and length-truncated or tool-use turns fail with a retry hint and stop chain handoffs. Provider errors and cancellation remain failures even with exit code zero.

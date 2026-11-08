@@ -938,3 +938,62 @@ for (const parallel of [false, true]) {
     }
   });
 }
+
+for (const mode of ["single", "chain", "parallel"] as const) {
+  test(`progress snapshots are detached and may be frozen (${mode})`, async (t) => {
+    const { children, execute } = setup(t);
+    const snapshots: unknown[] = [];
+    const originals: string[] = [];
+    const run = execute(undefined, mode === "chain", "test", mode === "parallel", (partial) => {
+      snapshots.push(partial);
+      originals.push(JSON.stringify(partial));
+      const pending: unknown[] = [partial];
+      while (pending.length) {
+        const value = pending.pop();
+        if (value && typeof value === "object") { pending.push(...Object.values(value)); Object.freeze(value); }
+      }
+    });
+    try {
+      for (let index = 0; index < (mode === "parallel" ? 8 : mode === "chain" ? 2 : 1); index++) {
+        for (let turn = 0; turn < (index === 0 ? 270 : 1); turn++) {
+          children[index].stdout.emit("data", messageLine(`answer-${turn}`));
+        }
+        children[index].emit("close", 0, null);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    } catch (error) {
+      for (const child of children) child.emit("close", 1, null);
+      await run.catch(() => {});
+      throw error;
+    }
+    const result = await run;
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.results[0].usage.turns, 270);
+    assert.equal(result.details.results[0].messages.length, 256);
+    assert.deepEqual(snapshots.map(snapshot => JSON.stringify(snapshot)), originals);
+    assert.ok(result.details.results.every(item => item.exitCode === 0));
+  });
+}
+
+test("model provenance distinguishes requested, selected and observed across turns", async (t) => {
+  const { children, execute } = setup(t);
+  for (const models of [["gpt-5.4"], ["openai/gpt-5.4"], ["other-model", undefined], [undefined], ["other-model", "gpt-5.4"]]) {
+    const run = execute();
+    const child = children.at(-1)!;
+    for (const model of models) child.stdout.emit("data", JSON.stringify({ type: "message_end", message: {
+      role: "assistant", model, content: [{ type: "text", text: "answer" }], stopReason: "stop",
+    } }) + "\n");
+    child.emit("close", 0, null);
+    const result = await run;
+    assert.equal(result.isError, undefined);
+    const provenance = result.details.results[0] as typeof result.details.results[0] & {
+      model: string; requestedModel: string; selectedModel: string; observedModel?: string;
+    };
+    assert.equal(provenance.requestedModel, "openai/gpt-5.4");
+    assert.equal(provenance.selectedModel, "openai/gpt-5.4");
+    const observed = models.filter(model => model !== undefined).at(-1);
+    assert.equal(provenance.observedModel, observed);
+    assert.equal(provenance.model, observed ?? "openai/gpt-5.4");
+    assert.equal(provenance.warnings.some(warning => /different from the selected model/.test(warning)), models.includes("other-model"));
+  }
+});
