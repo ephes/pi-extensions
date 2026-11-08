@@ -13,6 +13,8 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Detached progress snapshots and truthful requested/selected/observed model provenance.
+
 - [x] Strict UTF-8 Kagi response admission and credential-safe transport/body failures.
 
 - [x] Finite aggregate agent usage and one bounded readable-output limit policy.

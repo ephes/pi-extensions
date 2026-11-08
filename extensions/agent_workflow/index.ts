@@ -40,6 +40,9 @@ interface SingleResult {
   warnings: string[];
   usage: UsageStats;
   model?: string;
+  requestedModel?: string;
+  selectedModel?: string;
+  observedModel?: string;
   stopReason?: string;
   errorMessage?: string;
   step?: number;
@@ -364,7 +367,7 @@ async function runSingleAgent(
       stderr: "No authenticated Pi models are configured. Run /login or configure an API key.",
       warnings: modelSelection.warning ? [modelSelection.warning] : [],
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-      model: agent.model,
+      requestedModel: agent.model,
       step,
     };
   }
@@ -396,6 +399,8 @@ async function runSingleAgent(
     warnings: modelSelection.warning ? [modelSelection.warning] : [],
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
     model: modelSelection.resolvedModel,
+    requestedModel: agent.model,
+    selectedModel: modelSelection.resolvedModel,
     step,
   };
 
@@ -540,7 +545,14 @@ async function runSingleAgent(
               return;
             }
             currentResult.usage = nextUsage;
-            if (!currentResult.model && message.model) currentResult.model = message.model;
+            if (message.model) {
+              currentResult.observedModel = message.model;
+              currentResult.model = message.model;
+              const selected = modelSelection.resolvedModel!;
+              if (message.model !== selected && message.model !== selected.slice(selected.indexOf("/") + 1)) {
+                warnOnce("An assistant event reported a model different from the selected model; see model provenance.");
+              }
+            }
             completedAnswer = message.stopReason === "stop" && message.content.some(
               (part) => part.type === "text" && part.text.trim().length > 0,
             );
@@ -704,7 +716,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       signal = signal ? AbortSignal.any([signal, progress.signal]) : progress.signal;
       onUpdate = deliverUpdate ? (partial) => {
         if (progress.signal.aborted) return;
-        try { deliverUpdate(partial); }
+        try { deliverUpdate(structuredClone(partial)); }
         catch { progress.abort(PROGRESS_FAILURE); }
       } : undefined;
       const discovery = discoverBundledAgents();
