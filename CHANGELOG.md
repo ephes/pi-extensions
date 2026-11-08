@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reject explicit empty or unknown bundled-agent tool policies instead of falling back to default capabilities; retain omitted-field defaults and exact built-in allowlists.
+- Pass delegated tasks through private temporary files using Pi’s public file input, keeping large and private task text out of process arguments while preserving literal text and existing cleanup and chain limits.
+
 - Reject deeply nested consumed protocol messages before serialization; share message/task/stderr retention budgets across chain steps and cap repeated handoff substitutions with omission metadata.
 
 - Detach workflow progress snapshots and distinguish requested, selected and assistant-reported model provenance with bounded mismatch warnings.

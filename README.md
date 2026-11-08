@@ -45,8 +45,11 @@ Bundled prompt templates live in `prompts/` and are registered through the Pi pa
 
 Agent definitions use YAML frontmatter with required non-blank string `name` and
 `description` fields. Optional `tools` is a comma-separated string (for example,
-`read, bash`), and optional `model` is a string model ID. Omit optional fields
-instead of setting them to YAML lists, booleans, numbers, or null. The Markdown
+`read, bash`), and optional `model` is a string model ID. Tool names must be
+explicit built-ins: `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`,
+and `ls`. Empty, whitespace/commas-only, unknown, wildcard and additive tool
+policies are invalid and cannot launch an agent. Omitted `tools` uses Pi defaults.
+Omit optional fields instead of setting them to YAML lists, booleans, numbers, or null. The Markdown
 body supplies the system prompt; extra frontmatter fields are ignored. Invalid
 or unreadable definitions are skipped with filename-only warnings, and all
 otherwise valid definitions sharing an exact, case-sensitive name are excluded
@@ -191,9 +194,13 @@ the run, terminate the owned process group (SIGTERM, then SIGKILL after five sec
 for close before removing the prompt. Diagnostic stderr keeps only its last
 64 KiB. Message details keep the most recent entries within 4 MiB and 256
 messages, with truncation warnings; usage totals still include evicted messages. Aggregate usage overflow fails the run with a controlled protocol diagnostic and stops chain handoffs; returned totals remain finite. If the display sum across separate agents overflows, it reports that the total exceeds the numeric range and offers per-agent totals in the expanded view.
-Final output and chain handoffs use the retained messages. Prompt files have
-owner-only permissions, and failed prompt writes remove their owned temporary
-directory before reporting failure without spawning a child.
+Final output and chain handoffs use the retained messages. System and task prompt files have
+owner-only permissions in an owner-private temporary directory. Tasks use Pi’s
+public `@file` input, preserving literal task text (including whitespace) inside
+the host’s file attachment wrapper and keeping task contents out of process argv.
+The same chain handoff limits apply before writing the task file. Both files and
+their directory are removed after child cleanup; failed prompt writes also remove
+them before reporting failure without spawning a child.
 
 Consumed `message_end` and `tool_result_end` envelopes must carry a user,
 assistant, or tool-result message with role-appropriate content blocks. Text,

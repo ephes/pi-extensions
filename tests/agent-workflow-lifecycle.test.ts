@@ -1,6 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { EventEmitter } from "node:events";
@@ -13,11 +14,13 @@ function setup(t: TestContext) {
   Object.defineProperty(process, "platform", { value: "linux" });
   t.after(() => Object.defineProperty(process, "platform", platform));
   const spawnOptions: childProcess.SpawnOptions[] = [];
+  const spawnArgs: string[][] = [];
   const tasks: string[] = [];
   const children: Array<EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; pid: number; groupAlive: boolean; retainGroup: boolean; killed: boolean; signals: string[]; kill: (signal: string) => boolean }> = [];
   t.mock.method(childProcess, "spawn", (_command: string, args: string[], options: childProcess.SpawnOptions) => {
     spawnOptions.push(options);
-    tasks.push(args.at(-1)!);
+    spawnArgs.push(args);
+    tasks.push(fs.readFileSync(args.at(-1)!.slice(1), "utf8"));
     const child = Object.assign(new EventEmitter(), {
       pid: 10000 + children.length, groupAlive: true, retainGroup: false,
       stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false, signals: [] as string[],
@@ -57,7 +60,7 @@ function setup(t: TestContext) {
   const executeChain = (chain: Array<{ agent: string; task: string }>, update?: (result: StubResult) => void) => tool.execute("test", { chain }, undefined, update, {
     cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
   });
-  return { children, execute, executeChain, render, tasks, spawnOptions };
+  return { children, execute, executeChain, render, tasks, spawnOptions, spawnArgs };
 }
 
 test("abort escalates an unclosed child despite killed=true and waits for close", async (t) => {
@@ -184,18 +187,20 @@ for (const bytes of [Buffer.from([0xff]), Buffer.from([0xf0, 0x9f])]) {
   });
 }
 
-for (const partial of [false, true]) {
-  test(`prompt write failure cleans owned directory (partial=${partial})`, async (t) => {
+for (const [fileNumber, partial] of [[1, false], [1, true], [2, false], [2, true]] as const) {
+  test(`prompt write failure cleans owned directory (file=${fileNumber}, partial=${partial})`, async (t) => {
     const { children, execute } = setup(t);
     const originalWrite = fs.writeFileSync;
     const originalMkdir = fs.mkdtempSync;
     let directory = "";
     let fault = false;
+    let writes = 0;
     t.mock.method(fs, "mkdtempSync", (...args: Parameters<typeof fs.mkdtempSync>) => {
       directory = originalMkdir(...args) as string;
       return directory;
     });
     t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+      if (++writes !== fileNumber) return originalWrite(...args);
       fault = true;
       if (partial) originalWrite(args[0], "partial private prompt", args[2]);
       throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
@@ -711,7 +716,7 @@ for (const operation of ["mkdir", "write"]) {
     const method = operation === "mkdir" ? "mkdtempSync" : "writeFileSync";
     const original = fs[method] as (...args: unknown[]) => unknown;
     t.mock.method(fs, method, (...args: unknown[]) => {
-      if (++calls === 2) {
+      if (++calls === (operation === "write" ? 3 : 2)) {
         injected = true;
         throw new Error("synthetic private setup details");
       }
@@ -1134,3 +1139,27 @@ test("small per-placeholder allowances retain source prefixes without fragmented
   assert.equal(result.isError, undefined);
   assert.equal(tasks[1], "Task: " + Array(200).fill(previous.slice(0, 60)).join("|"));
 });
+
+
+for (const failure of ["cancel", "spawn"]) {
+  test(`task file is retained until child cleanup and removed after ${failure}`, async (t) => {
+    const { children, execute, spawnArgs } = setup(t);
+    const controller = new AbortController();
+    const run = execute(controller.signal);
+    const taskPath = spawnArgs[0].at(-1)!.slice(1);
+    assert.equal(fs.readFileSync(taskPath, "utf8"), "Task: test");
+    if (failure === "cancel") {
+      const rejected = assert.rejects(run, /aborted/);
+      controller.abort();
+      assert.ok(fs.existsSync(taskPath), "keep task input until the child is reaped");
+      children[0].emit("close", null, "SIGTERM");
+      await rejected;
+    } else {
+      Object.assign(children[0], { pid: undefined });
+      children[0].emit("error", new Error("synthetic spawn failure"));
+      assert.equal((await run).isError, true);
+    }
+    assert.equal(fs.existsSync(taskPath), false);
+    assert.equal(fs.existsSync(path.dirname(taskPath)), false);
+  });
+}
