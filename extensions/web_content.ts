@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { displayUrl, fetchReadablePage } from "../shared/web.js";
+import { displayUrl, fetchReadablePage, normalizeReadableLimit } from "../shared/web.js";
 
 export default function webContentExtension(pi: ExtensionAPI) {
   pi.registerTool({
@@ -24,7 +24,7 @@ export default function webContentExtension(pi: ExtensionAPI) {
         throw new Error("URL cannot be empty.");
       }
 
-      const maxChars = Math.max(1000, Math.min(params.maxChars ?? 12000, 40000));
+      const maxChars = normalizeReadableLimit(params.maxChars);
 
       onUpdate?.({
         content: [{ type: "text", text: `Fetching readable content from ${displayUrl(url)}...` }],

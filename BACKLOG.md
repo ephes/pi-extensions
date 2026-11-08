@@ -13,6 +13,8 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Finite aggregate agent usage and one bounded readable-output limit policy.
+
 - [x] Offline `agent_workflow` test for a parallel-mode protocol failure in one agent, covering result order, per-agent errors and `renderResult` (collapsed and expanded).
 - [x] One `kagi_search` limit policy (`normalizeKagiLimit` in `shared/kagi.ts`: round, clamp to 1–20) used by both the tool and `searchKagi`.
 - [x] Single shared user-agent constant in `shared/http.ts`.

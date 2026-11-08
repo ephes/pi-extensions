@@ -403,17 +403,17 @@ test("unsupported response errors stay bounded for a long Content-Type", async (
 for (const contentType of ["text/html", "text/plain"]) {
   for (const sourceTruncated of [false, true]) {
     for (const outputTruncated of [false, true]) {
-      test(`${contentType} keeps truncation flags: source=${sourceTruncated}, output=${outputTruncated}`, async (t) => {
-        const text = "x".repeat(sourceTruncated ? 2 * 1024 * 1024 + 1 : 100);
+      test(`${contentType} keeps independent source flags: source=${sourceTruncated}, shortOutput=${outputTruncated}`, async (t) => {
+        const text = "x".repeat(sourceTruncated ? 2 * 1024 * 1024 + 1 : 2000);
         t.mock.method(dns, "lookup", async () => approved);
         await fixture(t, (_request, response) => {
           response.setHeader("content-type", contentType);
           response.end(text);
         });
-        const maxChars = outputTruncated ? 10 : 3 * 1024 * 1024;
+        const maxChars = outputTruncated ? 1000 : 40000;
         const page = await fetchReadablePage("http://public.example/", maxChars);
         assert.equal(page.sourceTruncated, sourceTruncated);
-        assert.equal(page.outputTruncated, outputTruncated);
+        assert.equal(page.outputTruncated, sourceTruncated || outputTruncated);
         assert.equal(page.truncated, sourceTruncated || outputTruncated);
         assert.equal(page.content, text.slice(0, Math.min(maxChars, 2 * 1024 * 1024)));
       });
@@ -450,8 +450,9 @@ for (const size of [2 * 1024 * 1024 - 1, 2 * 1024 * 1024, 2 * 1024 * 1024 + 1]) 
     });
     const page = await fetchReadablePage("http://public.example/", 3 * 1024 * 1024);
     assert.equal(page.sourceTruncated, size > 2 * 1024 * 1024);
-    assert.equal(page.truncated, size > 2 * 1024 * 1024);
-    assert.equal(page.content, body.slice(0, 2 * 1024 * 1024));
+    assert.equal(page.outputTruncated, true);
+    assert.equal(page.truncated, true);
+    assert.equal(page.content, body.slice(0, 40000));
   });
 }
 
@@ -547,4 +548,21 @@ test("invalid input URLs produce controlled diagnostics without raw input", asyn
     assert.doesNotMatch(JSON.stringify(error), /password|secret|fragment/);
     return true;
   });
+});
+
+test("shared and registered readable output limits use one finite integer policy", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  await fixture(t, (_request, response) => { response.setHeader("content-type", "text/plain"); response.end("x".repeat(45000)); });
+  const { default: extension } = await import("../extensions/web_content.js");
+  let tool!: { execute(id: string, params: unknown, signal: undefined, update: (value: unknown) => void): Promise<{ details: { charCount: number; outputTruncated: boolean } }> };
+  extension({ registerTool(value: typeof tool) { tool = value; } } as never);
+  for (const [limit, expected] of [[NaN, 12000], [undefined, 12000], [Infinity, 12000], [-Infinity, 12000], [-5, 1000], [1001.9, 1001], [2500, 2500], [100000, 40000]] as const) {
+    const page = await fetchReadablePage("http://public.example/", limit);
+    assert.equal(page.content.length, expected, `shared ${limit}`);
+    assert.equal(page.outputTruncated, true);
+    assert.equal(page.sourceTruncated, false);
+    const result = await tool.execute("test", { url: "http://public.example/", maxChars: limit }, undefined, () => {});
+    assert.equal(result.details.charCount, expected, `tool ${limit}`);
+    assert.equal(result.details.outputTruncated, true);
+  }
 });

@@ -40,13 +40,19 @@ export function displayUrl(rawUrl: string): string {
   }
 }
 
-export async function fetchReadablePage(rawUrl: string, maxChars = 20000, signal?: AbortSignal): Promise<ReadablePage> {
+/** Readable output uses UTF-16 code units: floor, clamp to 1,000–40,000; non-finite uses 12,000. */
+export function normalizeReadableLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return 12000;
+  return Math.max(1000, Math.min(Math.floor(limit), 40000));
+}
+
+export async function fetchReadablePage(rawUrl: string, maxChars?: number, signal?: AbortSignal): Promise<ReadablePage> {
   const deadline = new AbortController();
   const timeoutError = new Error("Web fetch timed out after 30 seconds; retry the request.");
   const timer = setTimeout(() => deadline.abort(timeoutError), FETCH_DEADLINE_MS);
   const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   try {
-    return await fetchPage(rawUrl, maxChars, combined);
+    return await fetchPage(rawUrl, normalizeReadableLimit(maxChars), combined);
   } finally {
     clearTimeout(timer);
   }
@@ -115,7 +121,7 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         throw new Error(`Could not extract readable content from ${displayUrl(currentUrl.toString())}`);
       }
 
-      const normalizedLimit = Math.max(1, maxChars);
+      const normalizedLimit = maxChars;
       const outputTruncated = extracted.length > normalizedLimit;
       const content = outputTruncated ? extracted.slice(0, normalizedLimit) : extracted;
 
