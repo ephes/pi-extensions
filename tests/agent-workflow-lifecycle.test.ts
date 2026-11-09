@@ -8,37 +8,53 @@ import extension from "../extensions/agent_workflow/index.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 function setup(t: TestContext) {
+  // Model POSIX groups on every host; no test sends real OS signals.
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "linux" });
+  t.after(() => Object.defineProperty(process, "platform", platform));
+  const spawnOptions: childProcess.SpawnOptions[] = [];
   const tasks: string[] = [];
-  const children: Array<EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; killed: boolean; signals: string[]; kill: (signal: string) => boolean }> = [];
-  t.mock.method(childProcess, "spawn", (_command: string, args: string[]) => {
+  const children: Array<EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; pid: number; groupAlive: boolean; retainGroup: boolean; killed: boolean; signals: string[]; kill: (signal: string) => boolean }> = [];
+  t.mock.method(childProcess, "spawn", (_command: string, args: string[], options: childProcess.SpawnOptions) => {
+    spawnOptions.push(options);
     tasks.push(args.at(-1)!);
     const child = Object.assign(new EventEmitter(), {
+      pid: 10000 + children.length, groupAlive: true, retainGroup: false,
       stdout: new EventEmitter(), stderr: new EventEmitter(), killed: false, signals: [] as string[],
       kill(signal: string) { this.killed = true; this.signals.push(signal); return true; },
     });
+    child.prependListener("close", () => { if (!child.retainGroup) child.groupAlive = false; });
     children.push(child);
     return child;
+  });
+  t.mock.method(process, "kill", (pid: number, signal: Parameters<typeof process.kill>[1] = "SIGTERM") => {
+    const child = children.find((item) => item.pid === -pid);
+    assert.ok(child, `must signal only an owned group: ${pid}`);
+    if (!child.groupAlive) throw Object.assign(new Error("group gone"), { code: "ESRCH" });
+    if (signal !== 0) child.signals.push(String(signal));
+    if (signal === "SIGKILL") child.groupAlive = false;
+    return true;
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   type StubResult = { isError?: boolean; content: Array<{ type: string; text?: string }>; details: { results: Array<{ messages: unknown[]; stderr: string; warnings: string[]; stopReason?: string; errorMessage?: string; exitCode: number; agent: string; task: string; usage: { turns: number } }> } };
   type StubComponent = { render: (width: number) => string[] };
   type StubTool = {
-    execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: undefined, ctx: unknown) => Promise<StubResult>;
+    execute: (id: string, params: unknown, signal: AbortSignal | undefined, update: ((result: StubResult) => void) | undefined, ctx: unknown) => Promise<StubResult>;
     renderResult: (result: StubResult, options: { expanded: boolean; isPartial: boolean }, theme: unknown) => StubComponent;
   };
   let tool: StubTool;
   extension({ registerTool(definition: StubTool) { tool = definition; } } as unknown as ExtensionAPI);
-  const execute = (signal?: AbortSignal, chain = false, task = "{previous}", parallel = false) => tool.execute("test", chain
+  const execute = (signal?: AbortSignal, chain = false, task = "{previous}", parallel = false, update?: (result: StubResult) => void) => tool.execute("test", chain
     ? { chain: [{ agent: "implementer", task: "first" }, { agent: "reviewer", task }] }
     : parallel ? { tasks: Array.from({ length: 8 }, (_, i) => ({ agent: "implementer", task: `task-${i}` })) }
-    : { agent: "implementer", task: "test" }, signal, undefined, {
+    : { agent: "implementer", task: "test" }, signal, update, {
       cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
     } as never);
   const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
   const render = (result: StubResult, expanded: boolean) =>
     tool.renderResult(result, { expanded, isPartial: false }, plainTheme).render(200).map((line) => line.trimEnd()).join("\n");
-  return { children, execute, render, tasks };
+  return { children, execute, render, tasks, spawnOptions };
 }
 
 test("abort escalates an unclosed child despite killed=true and waits for close", async (t) => {
@@ -92,6 +108,7 @@ for (const [code, signal, failed] of [[null, "SIGKILL", true], [0, null, false],
     await Promise.resolve();
     if (!failed) {
       await new Promise<void>((resolve) => setImmediate(resolve));
+      children[1].stdout.emit("data", messageLine("final answer"));
       children[1].emit("close", 0, null);
     }
     const result = await run;
@@ -105,6 +122,7 @@ test("spawn error settles failure and removes abort listener", async (t) => {
   const { children, execute } = setup(t);
   const controller = new AbortController();
   const run = execute(controller.signal);
+  Object.assign(children[0], { pid: undefined });
   children[0].emit("error", new Error("spawn unavailable"));
   const result = await run;
   assert.equal(result.isError, true);
@@ -116,7 +134,6 @@ test("spawn error settles failure and removes abort listener", async (t) => {
 test("running child error waits for close before settlement", async (t) => {
   const { children, execute } = setup(t);
   const run = execute();
-  Object.assign(children[0], { pid: 123 });
   let settled = false;
   void run.then(() => { settled = true; });
   children[0].emit("error", new Error("kill unavailable"));
@@ -347,6 +364,7 @@ for (const oversized of [false, true]) {
     } }) + "\n");
     children[0].emit("close", 0, null);
     await new Promise<void>((resolve) => setImmediate(resolve));
+    children[1].stdout.emit("data", messageLine("final answer"));
     children[1].emit("close", 0, null);
     const result = await run;
     assert.equal(Boolean(result.isError), false);
@@ -413,6 +431,7 @@ test("parallel cancellation preserves completed results in order", async (t) => 
   const { children, execute } = setup(t);
   const controller = new AbortController();
   const run = execute(controller.signal, false, "", true);
+  children[0].stdout.emit("data", messageLine("completed"));
   children[0].emit("close", 0, null);
   controller.abort();
   for (const child of children.slice(1)) child.emit("close", null, "SIGTERM");
@@ -580,12 +599,10 @@ for (const oversized of [false, true]) {
       { type: "text", text: text.slice(6) }];
     const run = execute(undefined, true);
     children[0].stdout.emit("data", messageLine("older answer"));
-    children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content } }) + "\n");
-    // Preserve the latest assistant with text selection when a later message has no text.
-    children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "hidden" }] } }) + "\n");
+    children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content, stopReason: "stop" } }) + "\n");
     children[0].emit("close", 0, null);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    children[1].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content } }) + "\n");
+    children[1].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content, stopReason: "stop" } }) + "\n");
     children[1].emit("close", 0, null);
     const result = await run;
     assert.deepEqual(result.content, [{ type: "text", text: "Warnings:\n- Requested model anthropic/claude-opus-4-6 is unavailable; falling back to openai/gpt-5.4.\n\n" + text }]);
@@ -608,3 +625,201 @@ for (const type of ["message_end", "tool_result_end"]) {
     assert.deepEqual(children[0].signals, []);
   });
 }
+
+for (const terminal of ["empty", "tools", "length", "toolUse", "missing", "blank", "later-incomplete", "thinking", "stop"]) {
+  test(`terminal completion required before chain handoff: ${terminal}`, async (t) => {
+    const { children, execute, render } = setup(t);
+    const run = execute(undefined, true);
+    if (terminal === "later-incomplete" || terminal === "thinking") children[0].stdout.emit("data", messageLine("earlier answer"));
+    if (terminal === "tools") {
+      children[0].stdout.emit("data", JSON.stringify({ type: "tool_result_end", message: { role: "toolResult", content: [{ type: "text", text: "tool output" }] } }) + "\n");
+    } else if (terminal !== "empty") {
+      children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: {
+        role: "assistant", content: terminal === "thinking" ? [{ type: "thinking", thinking: "still reasoning" }] : [{ type: "text", text: terminal === "blank" ? "  " : "answer" }],
+        stopReason: terminal === "missing" || terminal === "later-incomplete" ? undefined : terminal === "blank" || terminal === "thinking" ? "stop" : terminal,
+      } }) + "\n");
+    }
+    children[0].emit("close", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (children[1]) {
+      children[1].stdout.emit("data", messageLine("final answer"));
+      children[1].emit("close", 0, null);
+    }
+    const result = await run;
+    assert.equal(Boolean(result.isError), terminal !== "stop");
+    assert.equal(children.length, terminal === "stop" ? 2 : 1);
+    if (terminal !== "stop") assert.match(result.content[0].text!, /completed assistant answer.*retry/i);
+    if (terminal === "thinking") {
+      for (const expanded of [false, true]) assert.match(render(result, expanded), /earlier answer/);
+    }
+  });
+}
+
+for (const closeBeforeEscalation of [false, true]) {
+  test(`abort owns descendant group even after parent exit (close=${closeBeforeEscalation})`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { children, execute, spawnOptions } = setup(t);
+    const controller = new AbortController();
+    const run = execute(controller.signal);
+    const rejected = assert.rejects(run, /aborted/);
+    let settled = false;
+    void run.catch(() => { settled = true; });
+    const unrelated = execute();
+    assert.equal(spawnOptions[0].detached, true);
+    children[0].retainGroup = true; // A grandchild outlives the direct child.
+    controller.abort();
+    children[0].emit("exit", null, "SIGTERM");
+    if (closeBeforeEscalation) children[0].emit("close", null, "SIGTERM");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.deepEqual(children[0].signals, ["SIGTERM"]);
+    t.mock.timers.tick(5000);
+    assert.deepEqual(children[0].signals, ["SIGTERM", "SIGKILL"]);
+    assert.equal(children[0].groupAlive, false);
+    assert.deepEqual(children[1].signals, []);
+    if (!closeBeforeEscalation) children[0].emit("close", null, "SIGTERM");
+    await rejected;
+    children[1].stdout.emit("data", messageLine("unrelated answer"));
+    children[1].emit("close", 0, null);
+    assert.equal((await unrelated).isError, undefined);
+  });
+}
+
+test("unsupported process-group platform fails before prompt creation", async (t) => {
+  const { children, execute } = setup(t);
+  Object.defineProperty(process, "platform", { value: "win32" });
+  const mkdir = t.mock.method(fs, "mkdtempSync");
+  syncBuiltinESMExports();
+  const result = await execute();
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text!, /POSIX process groups/);
+  assert.equal(children.length, 0);
+  assert.equal(mkdir.mock.callCount(), 0);
+});
+
+for (const operation of ["mkdir", "write"]) {
+  test(`parallel ${operation} preparation failure waits for siblings and preserves queued tasks`, async (t) => {
+    const { children, execute, tasks } = setup(t);
+    let calls = 0;
+    let injected = false;
+    const method = operation === "mkdir" ? "mkdtempSync" : "writeFileSync";
+    const original = fs[method] as (...args: unknown[]) => unknown;
+    t.mock.method(fs, method, (...args: unknown[]) => {
+      if (++calls === 2) {
+        injected = true;
+        throw new Error("synthetic private setup details");
+      }
+      return original(...args);
+    });
+    syncBuiltinESMExports();
+    const run = execute(undefined, false, "", true);
+    let settled = false;
+    void run.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(injected, true);
+    assert.equal(settled, false);
+    // Each completion may start another queued task; finish all successful children.
+    for (let index = 0; index < 7; index++) {
+      const child = children[index];
+      assert.ok(child);
+      child.stdout.emit("data", messageLine(`answer-${tasks[index]}`));
+      child.emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const result = await run;
+    assert.equal(children.length, 7);
+    assert.deepEqual(result.details.results.map((item) => item.task), Array.from({ length: 8 }, (_, i) => `task-${i}`));
+    const failed = result.details.results[1];
+    assert.equal(failed.exitCode, 1);
+    assert.match(failed.errorMessage!, /Unable to prepare or start agent task/);
+    assert.doesNotMatch(JSON.stringify(result), /synthetic private/);
+    for (const [index, item] of result.details.results.entries()) {
+      if (index !== 1) assert.equal(item.exitCode, 0);
+    }
+  });
+}
+
+for (const batch of ["all-failed", "mixed", "provider-error", "aborted", "success"]) {
+  test(`parallel verdict, summary and render agree: ${batch}`, async (t) => {
+    const { children, execute, render } = setup(t);
+    const run = execute(undefined, false, "", true);
+    const failed = (index: number) => batch === "all-failed" || batch === "provider-error" || batch === "aborted" || (batch === "mixed" && index % 2 === 1);
+    for (let index = 0; index < 8; index++) {
+      const child = children[index];
+      const stopReason = failed(index) && batch === "provider-error" ? "error" : failed(index) && batch === "aborted" ? "aborted" : "stop";
+      child.stdout.emit("data", JSON.stringify({ type: "message_end", message: {
+        role: "assistant", content: [{ type: "text", text: `answer-${index}` }], stopReason,
+        ...(stopReason === "error" ? { errorMessage: "provider failed" } : {}),
+      } }) + "\n");
+      child.emit("close", failed(index) && (batch === "all-failed" || batch === "mixed") ? 2 : 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const result = await run;
+    const successes = Array.from({ length: 8 }, (_, i) => !failed(i)).filter(Boolean).length;
+    assert.equal(Boolean(result.isError), successes !== 8);
+    assert.match(result.content[0].text!, new RegExp(`^Parallel: ${successes}/8 succeeded`));
+    assert.equal((result.content[0].text!.match(/\] completed:/g) ?? []).length, successes);
+    assert.equal((result.content[0].text!.match(/\] failed:/g) ?? []).length, 8 - successes);
+    assert.deepEqual(result.details.results.map((item) => item.task), Array.from({ length: 8 }, (_, i) => `task-${i}`));
+    for (const expanded of [false, true]) {
+      const output = render(result, expanded);
+      assert.match(output, new RegExp(`parallel ${successes}/8 tasks`));
+      assert.deepEqual([...output.matchAll(/─── implementer ([✓✗])/g)].map((match) => match[1]), Array.from({ length: 8 }, (_, i) => failed(i) ? "✗" : "✓"));
+    }
+  });
+}
+
+for (const mode of ["single", "chain", "parallel"]) {
+  test(`live ${mode} updates remain running until close`, async (t) => {
+    const { children, execute, render } = setup(t);
+    const outputs: string[] = [];
+    const run = execute(undefined, mode === "chain", "{previous}", mode === "parallel", (partial) => {
+      for (const expanded of [false, true]) outputs.push(render(partial, expanded));
+    });
+    children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: {
+      role: "assistant", content: [{ type: "text", text: "working" }], stopReason: "toolUse",
+    } }) + "\n");
+    assert.equal(outputs.length, 2);
+    for (const output of outputs) {
+      assert.match(output, /^⏳/);
+      assert.doesNotMatch(output, /✗|\[toolUse\]/);
+      if (mode === "parallel") assert.match(output, /0\/8 done, 8 running/);
+    }
+    for (let index = 0; index < (mode === "parallel" ? 8 : mode === "chain" ? 2 : 1); index++) {
+      children[index].stdout.emit("data", messageLine("completed"));
+      children[index].emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const result = await run;
+    assert.equal(result.isError, undefined);
+    assert.match(render(result, true), /^✓/);
+  });
+}
+
+test("parallel unsupported-platform failures retain an actionable diagnostic", async (t) => {
+  const { children, execute } = setup(t);
+  Object.defineProperty(process, "platform", { value: "win32" });
+  const mkdir = t.mock.method(fs, "mkdtempSync");
+  syncBuiltinESMExports();
+  const result = await execute(undefined, false, "", true);
+  assert.equal(result.isError, true);
+  assert.equal(result.details.results.length, 8);
+  for (const item of result.details.results) assert.match(item.errorMessage!, /POSIX process groups/);
+  assert.equal(children.length, 0);
+  assert.equal(mkdir.mock.callCount(), 0);
+});
+
+test("group signal errors retain the protocol diagnostic", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  t.mock.method(process, "kill", () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); });
+  const run = execute();
+  children[0].stdout.emit("data", Buffer.from([0xff]));
+  children[0].emit("close", 1, null);
+  t.mock.timers.tick(5000);
+  // Model the bounded escalation without relying on platform signal delivery.
+  // The final warning must supplement, rather than replace, the root cause.
+  const result = await run;
+  assert.match(result.details.results[0].errorMessage!, /invalid UTF-8/);
+  assert.ok(result.details.results[0].warnings.includes("Unable to signal the owned agent process group."));
+});

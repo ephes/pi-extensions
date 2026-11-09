@@ -161,7 +161,9 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
 - Chain mode truncates `{previous}` context before passing it to the next delegated agent step to avoid oversized command-line prompts. Every placeholder receives the same literal prior output, including dollar syntax and any `{previous}` text in that output; inserted text is not expanded again.
 - Parallel cancellation stops claiming queued tasks; unstarted tasks create no prompt files or children and appear as aborted in the complete, ordered summary. Already-cancelled single and chain runs fail before prompt creation.
-- Agent workflow cancellation sends SIGTERM, escalates to SIGKILL after five seconds if the child has not closed, and waits for close before cleanup. Signal termination or a missing exit code fails the run and stops chained handoffs; partial output is not treated as success.
+- Agent workflows require POSIX process groups (Linux/macOS); Windows fails before prompt creation or launch. Each child starts in its own process group. Cancellation and protocol failure send SIGTERM to that group, escalate to SIGKILL after five seconds if it remains, and wait for child close before cleanup. Escalation also covers descendants that outlive the direct child or hold its output pipes open; descendants must stay in the inherited group. The extension host's group is never signalled. Detached groups do not receive terminal signals addressed to the host; cancel workflows before stopping it. An abrupt host exit (including a host crash or kill) can leave delegated processes running; automatic cleanup after host death is not provided. Signal termination or a missing exit code fails the run and stops chained handoffs.
+- A successful run needs both exit code zero and a final assistant `message_end` with `stopReason: "stop"` and nonblank text. Empty output, tool-only output, missing status, and length-truncated or tool-use turns fail with a retry hint and stop chain handoffs. Provider errors and cancellation remain failures even with exit code zero.
+- Parallel prompt/setup failures become per-task failures; started siblings finish and queued tasks continue unless explicitly cancelled. Results retain input order. Success counts, task summaries, display icons and the tool error flag use the same verdict; any failed task marks the batch as an error while retaining every result.
 
 Agent workflow stdout uses streaming, strict UTF-8 decoding, including the final
 line at EOF. The 1 MiB ceiling applies to every event, including cumulative
@@ -180,7 +182,7 @@ Consumed `message_end` and `tool_result_end` envelopes must carry a user,
 assistant, or tool-result message with role-appropriate content blocks. Text,
 thinking, image, and tool-call fields are validated before retention; supplied
 assistant usage must contain finite, nonnegative token and cost values. Optional
-usage and assistant status fields may be absent. Malformed consumed messages
+usage and assistant status fields may be absent in intermediate messages; the final assistant completion must supply `stopReason: "stop"`. Malformed consumed messages
 fail the run with a bounded diagnostic and the same terminate-and-reap lifecycle
 as protocol overflow; unknown event types remain ignored. Unsupported message
 roles and block types in consumed envelopes fail closed. Extra metadata is retained.

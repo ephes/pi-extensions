@@ -237,6 +237,10 @@ function combineTextWithWarnings(text: string, warnings: string[]): string {
   return text ? `${warningsBlock}\n\n${text}` : warningsBlock;
 }
 
+function isSuccessful(result: SingleResult): boolean {
+  return result.exitCode === 0 && result.stopReason === "stop" && !result.errorMessage;
+}
+
 function getErrorText(result: SingleResult): string {
   const baseText = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
   const warnings = result.warnings.filter((warning) => warning !== baseText);
@@ -376,11 +380,12 @@ async function runSingleAgent(
   let tempPromptDir: string | null = null;
   let tempPromptPath: string | null = null;
   let aborted = false;
+  let completedAnswer = false;
 
   const currentResult: SingleResult = {
     agent: agent.name,
     task,
-    exitCode: 0,
+    exitCode: -1,
     messages: [],
     stderr: "",
     warnings: modelSelection.warning ? [modelSelection.warning] : [],
@@ -398,6 +403,11 @@ async function runSingleAgent(
   };
 
   try {
+    if (process.platform === "win32") {
+      currentResult.exitCode = 1;
+      currentResult.errorMessage = "Agent workflows require POSIX process groups; Windows is not supported.";
+      return currentResult;
+    }
     if (agent.systemPrompt.trim()) {
       const temp = writePromptToTempFile(agent.name, agent.systemPrompt);
       tempPromptDir = temp.dir;
@@ -416,6 +426,7 @@ async function runSingleAgent(
       const proc = spawn("pi", args, {
         cwd: cwd ?? defaultCwd,
         shell: false,
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
       let buffer = "";
@@ -442,6 +453,19 @@ async function runSingleAgent(
       let settled = false;
       let closed = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let closedCode = 1;
+      const signalGroup = (groupSignal: "SIGTERM" | "SIGKILL" | 0): boolean => {
+        // detached:true creates a new group with the child's PID, never the host's.
+        if (!proc.pid || proc.pid === process.pid) return false;
+        try {
+          process.kill(-proc.pid, groupSignal);
+          return true;
+        } catch (error) {
+          if ((error as { code?: string }).code === "ESRCH") return false;
+          warnOnce("Unable to signal the owned agent process group.");
+          return true; // Still attempt bounded escalation when the group may exist.
+        }
+      };
       const cleanup = () => {
         if (killTimer) clearTimeout(killTimer);
         signal?.removeEventListener("abort", killProc);
@@ -454,9 +478,11 @@ async function runSingleAgent(
       };
       const terminate = () => {
         if (settled || closed || killTimer) return;
-        proc.kill("SIGTERM");
+        signalGroup("SIGTERM");
         killTimer = setTimeout(() => {
-          if (!closed) proc.kill("SIGKILL");
+          signalGroup("SIGKILL");
+          killTimer = undefined;
+          if (closed) finish(closedCode);
         }, 5000);
       };
 
@@ -504,7 +530,10 @@ async function runSingleAgent(
               currentResult.usage.contextTokens = usage.totalTokens || 0;
             }
             if (!currentResult.model && message.model) currentResult.model = message.model;
-            if (message.stopReason) currentResult.stopReason = message.stopReason;
+            completedAnswer = message.stopReason === "stop" && message.content.some(
+              (part) => part.type === "text" && part.text.trim().length > 0,
+            );
+            currentResult.stopReason = message.stopReason;
             if (message.errorMessage) currentResult.errorMessage = message.errorMessage;
           }
           emitUpdate();
@@ -577,7 +606,10 @@ async function runSingleAgent(
         } else if (code === null) {
           currentResult.errorMessage = `${currentResult.errorMessage ? currentResult.errorMessage + " " : ""}Agent subprocess closed without an exit code. Output may be incomplete.`;
         }
-        finish(protocolError || closeSignal ? 1 : (code ?? 1));
+        closedCode = protocolError || closeSignal ? 1 : (code ?? 1);
+        // close can precede descendant exit when descendants redirected their pipes.
+        if (killTimer && signalGroup(0)) return;
+        finish(closedCode);
       });
 
       proc.on("error", (error) => {
@@ -597,6 +629,17 @@ async function runSingleAgent(
       currentResult.stopReason = "aborted";
       currentResult.errorMessage = `Agent workflow was aborted.${currentResult.errorMessage ? " " + currentResult.errorMessage : ""}`;
     }
+    if (currentResult.exitCode === 0 && !completedAnswer && !currentResult.errorMessage &&
+        currentResult.stopReason !== "error" && currentResult.stopReason !== "aborted") {
+      currentResult.exitCode = 1;
+      currentResult.errorMessage = "Agent exited without a completed assistant answer (stop with nonblank text). Please retry the task.";
+    }
+    return currentResult;
+  } catch (error) {
+    if (!abortAsResult) throw error;
+    if (signal?.aborted) return abortedResult(agentName, task, step);
+    currentResult.exitCode = 1;
+    currentResult.errorMessage = "Unable to prepare or start agent task. Check local configuration and temporary-directory access, then retry.";
     return currentResult;
   } finally {
     if (tempPromptPath) {
@@ -712,7 +755,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           );
           results.push(result);
 
-          const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+          const isError = !isSuccessful(result);
           if (isError) {
             return {
               content: toolContent(`Chain stopped at step ${index + 1} (${step.agent}): ${getErrorText(result)}`),
@@ -783,16 +826,16 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           return result;
         }, signal, (taskItem) => abortedResult(taskItem.agent, taskItem.task));
 
-        const successCount = results.filter((result) => result.exitCode === 0).length;
+        const successCount = results.filter(isSuccessful).length;
         const summaries = results.map((result) => {
-          const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+          const isError = !isSuccessful(result);
           const resultText = isError ? getErrorText(result) : getSuccessText(result);
           const preview = resultText.length > 100 ? `${resultText.slice(0, 100)}...` : resultText;
           return `[${result.agent}] ${isError ? "failed" : "completed"}: ${preview || "(no output)"}`;
         });
 
         return {
-          isError: results.some((result) => result.stopReason === "aborted") || undefined,
+          isError: results.some((result) => !isSuccessful(result)) || undefined,
           content: toolContent(`Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
           details: makeDetails("parallel")(results),
         };
@@ -812,7 +855,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           onUpdate,
           makeDetails("single"),
         );
-        const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+        const isError = !isSuccessful(result);
         if (isError) {
           return {
             content: toolContent(`Agent ${result.agent} failed: ${getErrorText(result)}`),
@@ -910,8 +953,9 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
       if (details.mode === "single" && details.results.length === 1) {
         const single = details.results[0];
-        const isError = single.exitCode !== 0 || single.stopReason === "error" || single.stopReason === "aborted";
-        const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+        const running = single.exitCode === -1;
+        const isError = !running && !isSuccessful(single);
+        const icon = running ? theme.fg("warning", "⏳") : isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
         const displayItems = getDisplayItems(single.messages);
         const finalOutput = getFinalOutput(single.messages);
 
@@ -958,15 +1002,16 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       }
 
       if (details.mode === "chain") {
-        const successCount = details.results.filter((entry) => entry.exitCode === 0).length;
-        const icon = successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
+        const successCount = details.results.filter(isSuccessful).length;
+        const running = details.results.some((entry) => entry.exitCode === -1);
+        const icon = running ? theme.fg("warning", "⏳") : successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
         let text = `${icon} ${theme.fg("toolTitle", theme.bold("chain "))}${theme.fg("accent", `${successCount}/${details.results.length} steps`)}`;
 
         if (expanded) {
           const container = new Container();
           container.addChild(new Text(text, 0, 0));
           for (const entry of details.results) {
-            const itemIcon = entry.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+            const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
             const displayItems = getDisplayItems(entry.messages);
             const finalOutput = getFinalOutput(entry.messages);
             container.addChild(new Spacer(1));
@@ -992,7 +1037,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         }
 
         for (const entry of details.results) {
-          const itemIcon = entry.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+          const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
           text += `\n\n${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", entry.agent)} ${itemIcon}`;
           if (entry.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(entry.warnings))}`;
           const displayItems = getDisplayItems(entry.messages);
@@ -1005,8 +1050,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       }
 
       const running = details.results.filter((entry) => entry.exitCode === -1).length;
-      const successCount = details.results.filter((entry) => entry.exitCode === 0).length;
-      const failureCount = details.results.filter((entry) => entry.exitCode > 0).length;
+      const successCount = details.results.filter(isSuccessful).length;
+      const failureCount = details.results.filter((entry) => entry.exitCode !== -1 && !isSuccessful(entry)).length;
       const isRunning = running > 0;
       const icon = isRunning ? theme.fg("warning", "⏳") : failureCount > 0 ? theme.fg("warning", "◐") : theme.fg("success", "✓");
       const status = isRunning ? `${successCount + failureCount}/${details.results.length} done, ${running} running` : `${successCount}/${details.results.length} tasks`;
@@ -1015,7 +1060,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         const container = new Container();
         container.addChild(new Text(`${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`, 0, 0));
         for (const entry of details.results) {
-          const itemIcon = entry.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+          const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
           const displayItems = getDisplayItems(entry.messages);
           const finalOutput = getFinalOutput(entry.messages);
           container.addChild(new Spacer(1));
@@ -1042,7 +1087,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
       let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
       for (const entry of details.results) {
-        const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : entry.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+        const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
         const displayItems = getDisplayItems(entry.messages);
         text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", entry.agent)} ${itemIcon}`;
         if (entry.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(entry.warnings))}`;
