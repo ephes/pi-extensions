@@ -188,7 +188,7 @@ for (const bytes of [Buffer.from([0xff]), Buffer.from([0xf0, 0x9f])]) {
 }
 
 for (const [fileNumber, partial] of [[1, false], [1, true], [2, false], [2, true]] as const) {
-  test(`prompt write failure cleans owned directory (file=${fileNumber}, partial=${partial})`, async (t) => {
+  test(`agent input file write failure cleans owned directory (file=${fileNumber}, partial=${partial})`, async (t) => {
     const { children, execute } = setup(t);
     const originalWrite = fs.writeFileSync;
     const originalMkdir = fs.mkdtempSync;
@@ -209,7 +209,7 @@ for (const [fileNumber, partial] of [[1, false], [1, true], [2, false], [2, true
     try {
       await assert.rejects(execute(), (error: unknown) => {
         assert.ok(error instanceof Error);
-        assert.equal(error.message, "Unable to create agent prompt file.");
+        assert.equal(error.message, "Unable to create agent input files.");
         assert.ok(error.cause instanceof Error);
         assert.equal((error.cause as Error & { code?: string }).code, "ENOSPC");
         return true;
@@ -353,7 +353,7 @@ test("prompt write and cleanup failures preserve both causes without spawning", 
   try {
     await assert.rejects(execute(), (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /or remove its temporary directory/);
+      assert.match(error.message, /or remove their temporary directory/);
       assert.ok(error.cause instanceof AggregateError);
       assert.deepEqual(error.cause.errors, [writeError, cleanupError]);
       return true;

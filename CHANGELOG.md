@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Reject explicit empty or unknown bundled-agent tool policies instead of falling back to default capabilities; retain omitted-field defaults and exact built-in allowlists.
+- Verify against Pi’s own `@file` processing that the delegated task file becomes the exact `Task: …` initial message, and report agent input file write failures as “Unable to create agent input files.”
 - Pass delegated tasks through private temporary files using Pi’s public file input, keeping large and private task text out of process arguments while preserving literal text and existing cleanup and chain limits.
 
 - Reject deeply nested consumed protocol messages before serialization; share message/task/stderr retention budgets across chain steps and cap repeated handoff substitutions with omission metadata.

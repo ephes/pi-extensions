@@ -346,25 +346,25 @@ function abortedResult(agent: string, task: string, step?: number): SingleResult
   };
 }
 
-function writePromptToTempFile(agentName: string, prompt: string, task: string): { dir: string; filePath: string; taskPath: string } {
+function writeAgentInputFiles(agentName: string, prompt: string, task: string): { dir: string; systemPromptPath: string; taskPath: string } {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-agent-workflow-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path.join(tempDir, `prompt-${safeName}.md`);
+  const systemPromptPath = path.join(tempDir, `prompt-${safeName}.md`);
   const taskPath = path.join(tempDir, "task.md");
   try {
-    fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+    fs.writeFileSync(systemPromptPath, prompt, { encoding: "utf-8", mode: 0o600 });
     fs.writeFileSync(taskPath, `Task: ${task}`, { encoding: "utf-8", mode: 0o600 });
   } catch (error) {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (cleanupError) {
-      throw new Error("Unable to create agent prompt file or remove its temporary directory.", {
+      throw new Error("Unable to create agent input files or remove their temporary directory.", {
         cause: new AggregateError([error, cleanupError]),
       });
     }
-    throw new Error("Unable to create agent prompt file.", { cause: error });
+    throw new Error("Unable to create agent input files.", { cause: error });
   }
-  return { dir: tempDir, filePath, taskPath };
+  return { dir: tempDir, systemPromptPath, taskPath };
 }
 
 function truncatePreviousOutput(previousOutput: string, limit: number): string {
@@ -435,8 +435,8 @@ async function runSingleAgent(
   ];
   if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
-  let tempPromptDir: string | null = null;
-  let tempPromptPath: string | null = null;
+  let tempInputDir: string | null = null;
+  let tempSystemPromptPath: string | null = null;
   let aborted = false;
   let completedAnswer = false;
 
@@ -468,10 +468,10 @@ async function runSingleAgent(
       currentResult.errorMessage = "Agent workflows require POSIX process groups; Windows is not supported.";
       return currentResult;
     }
-    const temp = writePromptToTempFile(agent.name, agent.systemPrompt, task);
-    tempPromptDir = temp.dir;
-    tempPromptPath = temp.filePath;
-    if (agent.systemPrompt.trim()) args.push("--append-system-prompt", tempPromptPath);
+    const temp = writeAgentInputFiles(agent.name, agent.systemPrompt, task);
+    tempInputDir = temp.dir;
+    tempSystemPromptPath = temp.systemPromptPath;
+    if (agent.systemPrompt.trim()) args.push("--append-system-prompt", tempSystemPromptPath);
 
     // Defensive guard at the spawn boundary; prompt preparation is synchronous.
     if (signal?.aborted) {
@@ -713,18 +713,18 @@ async function runSingleAgent(
     currentResult.errorMessage = "Unable to prepare or start agent task. Check local configuration and temporary-directory access, then retry.";
     return currentResult;
   } finally {
-    if (tempPromptPath) {
+    if (tempSystemPromptPath) {
       try {
-        fs.unlinkSync(tempPromptPath);
+        fs.unlinkSync(tempSystemPromptPath);
       } catch {
         // Ignore cleanup failures for temp prompt files.
       }
     }
-    if (tempPromptDir) {
+    if (tempInputDir) {
       try {
-        fs.rmSync(tempPromptDir, { recursive: true, force: true });
+        fs.rmSync(tempInputDir, { recursive: true, force: true });
       } catch {
-        // Ignore cleanup failures for temp prompt directories.
+        // Ignore cleanup failures for temp input directories.
       }
     }
   }
