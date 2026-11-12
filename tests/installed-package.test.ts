@@ -85,17 +85,21 @@ for (const damage of ["extensions/kagi_search.ts", "shared/web.ts", "agents/revi
 }
 
 
-function fakeAgents(t: import("node:test").TestContext, inspect: (args: string[]) => void) {
+function fakeAgents(t: import("node:test").TestContext, inspect: (args: string[]) => void | Promise<void>) {
   // Model the supported process-group platform; never launch or signal a real agent.
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   Object.defineProperty(process, "platform", { value: "linux" });
   t.after(() => Object.defineProperty(process, "platform", platform));
   let spawns = 0;
+  const inspectionErrors: unknown[] = [];
+  t.after(() => { if (inspectionErrors.length > 0) throw inspectionErrors[0]; });
   t.mock.method(childProcess, "spawn", (_command: string, args: string[]) => {
     spawns += 1;
-    inspect(args);
+    // Synchronous inspection failures surface from spawn; asynchronous ones are
+    // recorded and rethrown after the run, once the fake child has closed.
+    const pending = inspect(args);
     const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
-    queueMicrotask(() => {
+    void Promise.resolve(pending).catch((error: unknown) => { inspectionErrors.push(error); }).then(() => {
       child.stdout.emit("data", JSON.stringify({ type: "message_end", message: {
         role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop",
       } }) + "\n");
@@ -114,7 +118,7 @@ const fakeContext = (cwd: string) => ({
 test("installed tool policies reject empty and unknown lists without default-capability launches", async (t) => {
   const { workflow, installed, cwd } = await installedSmoke(t);
   const argv: string[][] = [];
-  const spawns = fakeAgents(t, (args) => argv.push(args));
+  const spawns = fakeAgents(t, (args) => { argv.push(args); });
   for (const tools of ['""', '"  "', '", ,"', 'read, unknown', '*', '+bash']) {
     fs.writeFileSync(path.join(installed, "agents/policy.md"), `---\nname: policy\ndescription: synthetic\ntools: ${tools}\n---\npolicy`);
     const result = await workflow.definition.execute("policy", { agent: "policy", task: "test" }, undefined, undefined, fakeContext(cwd));
@@ -156,4 +160,37 @@ test("installed large literal task travels in a private file outside argv and is
     assert.equal(fs.existsSync(path.dirname(taskPath)), false);
   }
   assert.equal(spawns(), 2);
+});
+
+test("installed task file becomes the exact initial message through Pi's own @file processing", async (t) => {
+  const { workflow, cwd } = await installedSmoke(t);
+  // Pi's CLI turns each @path argument into a file attachment before the first
+  // turn. Run that host code on the generated file while it still exists; no
+  // model or real child is started.
+  // Pi does not export its @file processor, so this deliberately imports the
+  // internal module of the locked dev install (verified with Pi 1.5.0). If a Pi
+  // update moves it, fail with a clear message instead of a bare import error.
+  const hostEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
+  const hostVersion = (JSON.parse(fs.readFileSync(path.join(path.dirname(hostEntry), "..", "package.json"), "utf8")) as { version: string }).version;
+  const processorPath = path.join(path.dirname(hostEntry), "cli", "file-processor.js");
+  assert.ok(fs.existsSync(processorPath), `Pi ${hostVersion} no longer ships dist/cli/file-processor.js; update this @file contract test for the new layout`);
+  const { processFileArguments } = await import(processorPath) as {
+    processFileArguments: (fileArgs: string[], options?: { autoResizeImages?: boolean }) => Promise<{ text: string; images: unknown[] }>;
+  };
+  const task = "  leading and trailing whitespace 🦊 $& {previous}\n\n\uFEFF<file name=\"x\">literal</file>\n  ";
+  let processed: { text: string; images: unknown[] } | undefined;
+  let taskPath = "";
+  fakeAgents(t, async (args) => {
+    const fileArgs = args.filter((arg) => arg.startsWith("@")).map((arg) => arg.slice(1));
+    assert.equal(fileArgs.length, 1);
+    taskPath = path.resolve(fileArgs[0]);
+    processed = await processFileArguments(fileArgs, { autoResizeImages: false });
+  });
+  assert.equal(typeof processFileArguments, "function", `Pi ${hostVersion} no longer exports processFileArguments from dist/cli/file-processor.js`);
+  const result = await workflow.definition.execute("host-file", { agent: "implementer", task }, undefined, undefined, fakeContext(cwd));
+  assert.equal(result.isError, undefined);
+  assert.ok(processed);
+  assert.deepEqual(processed.images, []);
+  assert.equal(processed.text, `<file name="${taskPath}">\nTask: ${task}\n</file>\n`);
+  assert.equal(fs.existsSync(taskPath), false);
 });

@@ -197,10 +197,11 @@ messages, with truncation warnings; usage totals still include evicted messages.
 Final output and chain handoffs use the retained messages. System and task prompt files have
 owner-only permissions in an owner-private temporary directory. Tasks use Pi’s
 public `@file` input, preserving literal task text (including whitespace) inside
-the host’s file attachment wrapper and keeping task contents out of process argv.
+the host’s `<file name="…">` attachment wrapper (the test suite checks this against the file processing of the locked Pi dev
+install) and keeping task contents out of process argv.
 The same chain handoff limits apply before writing the task file. Both files and
-their directory are removed after child cleanup; failed prompt writes also remove
-them before reporting failure without spawning a child.
+their directory are removed after child cleanup; failed input file writes also remove
+them before reporting “Unable to create agent input files.” without spawning a child.
 
 Consumed `message_end` and `tool_result_end` envelopes must carry a user,
 assistant, or tool-result message with role-appropriate content blocks. Text,
