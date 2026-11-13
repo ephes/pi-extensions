@@ -1035,6 +1035,94 @@ test("model provenance distinguishes requested, selected and observed across tur
   }
 });
 
+for (const cancelled of [false, true]) {
+  test(`high-event progress has bounded cadence and bytes with an exact final snapshot (cancelled=${cancelled})`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { children, execute } = setup(t);
+    const controller = new AbortController();
+    const sizes: number[] = [];
+    let last: unknown;
+    const run = execute(controller.signal, false, "test", cancelled, partial => {
+      sizes.push(Buffer.byteLength(JSON.stringify(partial)));
+      last = partial;
+    });
+    const answer = "exact final answer " + "x".repeat(700000);
+    for (let burst = 0; burst < 3; burst++) {
+      for (let event = 0; event < 30; event++) children[0].stdout.emit("data", messageLine(answer));
+      t.mock.timers.tick(100);
+    }
+    const intermediate = sizes.slice();
+    if (cancelled) controller.abort();
+    for (const child of children) child.emit("close", cancelled ? null : 0, cancelled ? "SIGTERM" : null);
+    const result = await run;
+    t.diagnostic(`90 events: ${intermediate.length} intermediate updates, max ${Math.max(...intermediate)} bytes; final answer ${answer.length} characters`);
+    assert.ok(intermediate.length <= 4, `coalesced 90 events into ${intermediate.length} updates`);
+    assert.ok(intermediate.every(bytes => bytes <= 512 * 1024), `intermediate sizes: ${intermediate}`);
+    assert.ok(sizes.length <= (cancelled ? 14 : 6));
+    assert.deepEqual(last, result, "the final callback flushes the complete detached result");
+    assert.match(JSON.stringify(result.details.results[0].messages), /exact final answer/);
+    const messages = result.details.results[0].messages as Array<{ content: Array<{ text: string }> }>;
+    assert.equal(messages.at(-1)!.content[0].text, answer);
+    assert.equal(Boolean(result.isError), cancelled);
+    if (!cancelled) assert.ok(result.content[0].text!.endsWith(answer));
+    const count = sizes.length;
+    t.mock.timers.tick(1000);
+    assert.equal(sizes.length, count, "no delayed update after the final flush");
+  });
+}
+
+test("a deferred progress callback failure cancels and reaps the active child", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  let updates = 0;
+  const run = execute(undefined, false, "test", false, () => {
+    if (++updates === 2) throw new Error("private observer token");
+  });
+  children[0].stdout.emit("data", messageLine("first"));
+  children[0].stdout.emit("data", messageLine("second"));
+  assert.equal(updates, 1);
+  t.mock.timers.tick(100);
+  assert.deepEqual(children[0].signals, ["SIGTERM"]);
+  children[0].emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result), /progress delivery failed/);
+  assert.doesNotMatch(JSON.stringify(result), /private observer token/);
+  t.mock.timers.tick(1000);
+  assert.equal(updates, 2);
+});
+
+test("single cancellation clears a pending preview without changing abort semantics", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  const controller = new AbortController();
+  let updates = 0;
+  const run = execute(controller.signal, false, "test", false, () => { updates++; });
+  const rejected = assert.rejects(run, /aborted/);
+  children[0].stdout.emit("data", messageLine("first"));
+  children[0].stdout.emit("data", messageLine("pending"));
+  controller.abort();
+  children[0].emit("close", null, "SIGTERM");
+  await rejected;
+  const count = updates;
+  t.mock.timers.tick(1000);
+  assert.equal(updates, count);
+});
+
+test("failure in the complete final snapshot stays a bounded workflow failure", async (t) => {
+  const { children, execute } = setup(t);
+  const run = execute(undefined, false, "test", false, partial => {
+    if (partial.details.results[0].exitCode === 0) throw new Error("private final observer token");
+  });
+  children[0].stdout.emit("data", messageLine("answer"));
+  children[0].emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result), /progress delivery failed/);
+  assert.doesNotMatch(JSON.stringify(result), /private final observer token/);
+  assert.equal(children[0].groupAlive, false);
+});
+
 for (const eof of [false, true]) {
   test(`deep consumed tool arguments fail with cleanup (EOF=${eof})`, async (t) => {
     const { children, execute, render } = setup(t);

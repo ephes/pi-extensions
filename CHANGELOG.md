@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Coalesce intermediate workflow progress at 100 ms and project bounded previews before cloning; flush complete final results and preserve observer-failure/cancellation cleanup.
+- Bound web dispatcher destruction to 100 ms, stop waiting on cancellation, and preserve primary fetch outcomes without exposing cleanup errors or leaving late rejections unobserved.
+
 - Admit bundled definitions through bounded regular-file descriptors (256 KiB), preserving regular-file symlinks and refusing FIFO targets without blocking discovery.
 - Fail and reap agent subprocesses on malformed or incomplete JSON stdout, including corruption after a completed answer; keep raw protocol lines out of diagnostics.
 

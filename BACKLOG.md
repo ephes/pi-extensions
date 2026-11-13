@@ -13,6 +13,8 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Coalesced bounded progress previews with complete final snapshots; finite dispatcher cleanup that preserves primary fetch outcomes.
+
 - [x] Bounded regular-file definition admission with compatible symlinks; fail closed on malformed JSON wire output.
 
 - [x] Bounded consumed protocol nesting and aggregate chain detail/handoff budgets.
