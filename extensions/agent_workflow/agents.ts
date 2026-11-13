@@ -22,6 +22,27 @@ export interface AgentDiscoveryResult {
 const TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"]);
 
 const AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../agents");
+const MAX_DEFINITION_BYTES = 256 * 1024;
+
+function readDefinition(filePath: string): string {
+  // Follow intentional links, but never block opening a FIFO swapped into place.
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_DEFINITION_BYTES) throw new Error("Invalid definition file.");
+    const bytes = Buffer.alloc(MAX_DEFINITION_BYTES + 1);
+    let used = 0;
+    while (used < bytes.length) {
+      const read = fs.readSync(fd, bytes, used, bytes.length - used, null);
+      if (read === 0) return bytes.subarray(0, used).toString("utf8");
+      used += read;
+      if (used > MAX_DEFINITION_BYTES) break;
+    }
+    throw new Error("Definition exceeds byte limit.");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 export function discoverBundledAgents(): AgentDiscoveryResult {
   const agents: AgentConfig[] = [];
@@ -44,7 +65,7 @@ export function discoverBundledAgents(): AgentDiscoveryResult {
 
     const filePath = path.join(AGENTS_DIR, entry.name);
     try {
-      const content = fs.readFileSync(filePath, "utf-8");
+      const content = readDefinition(filePath);
       const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
       if (
         typeof frontmatter.name !== "string" || !frontmatter.name.trim() ||

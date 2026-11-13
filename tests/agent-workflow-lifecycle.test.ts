@@ -157,6 +157,35 @@ function messageLine(text: string) {
   } }) + "\n");
 }
 
+for (const corruption of ["private-secret NOT JSON\n", '{"type":"private-secret"']) {
+  test(`malformed JSON after a completed answer fails closed (newline=${corruption.endsWith("\n")})`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { children, execute } = setup(t);
+    const run = execute();
+    children[0].retainGroup = true;
+    children[0].stdout.emit("data", messageLine("clean answer"));
+    children[0].stdout.emit("data", corruption);
+    children[0].emit("close", 0, null);
+    assert.deepEqual(children[0].signals, ["SIGTERM"]);
+    t.mock.timers.tick(5000);
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.deepEqual(children[0].signals, ["SIGTERM", "SIGKILL"]);
+    assert.match(JSON.stringify(result), /invalid JSON/);
+    assert.doesNotMatch(JSON.stringify(result), /private-secret/);
+  });
+}
+
+test("blank lines and legitimate unconsumed JSON events still allow a clean answer", async (t) => {
+  const { children, execute } = setup(t);
+  const run = execute();
+  children[0].stdout.emit("data", '\n  \r\n{"type":"message_update","partial":{}}\n{"type":"agent_end"}\n');
+  children[0].stdout.emit("data", messageLine("clean answer"));
+  children[0].emit("close", 0, null);
+  assert.equal((await run).isError, undefined);
+  assert.deepEqual(children[0].signals, []);
+});
+
 test("UTF-8 protocol survives every byte split and EOF without newline", async (t) => {
   const { children, execute } = setup(t);
   const text = "Grüße aus Köln 🦊";

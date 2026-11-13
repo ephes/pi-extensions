@@ -13,6 +13,8 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Bounded regular-file definition admission with compatible symlinks; fail closed on malformed JSON wire output.
+
 - [x] Bounded consumed protocol nesting and aggregate chain detail/handoff budgets.
 
 - [x] Detached progress snapshots and truthful requested/selected/observed model provenance.

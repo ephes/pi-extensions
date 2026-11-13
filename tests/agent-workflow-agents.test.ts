@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import agentWorkflowExtension from "../extensions/agent_workflow/index.js";
@@ -28,24 +29,32 @@ test("discoverBundledAgents finds bundled implementer and reviewer definitions",
 
 function fixtureDiscovery(t: import("node:test").TestContext, definitions: Record<string, string | Error>) {
   const agentsDir = discoverBundledAgents().agentsDir;
-  const originalRead = fs.readFileSync;
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-definitions-"));
+  for (const [name, content] of Object.entries(definitions)) {
+    if (typeof content === "string") fs.writeFileSync(path.join(fixtureDir, name), content);
+    else fs.symlinkSync(path.join(fixtureDir, "missing"), path.join(fixtureDir, name));
+  }
   const originalReaddir = fs.readdirSync;
   t.mock.method(fs, "readdirSync", (directory: string, options: unknown) => directory === agentsDir
-    ? Object.keys(definitions).map((name) => ({ name, isFile: () => true, isSymbolicLink: () => false }))
+    ? originalReaddir(fixtureDir, options as never)
     : originalReaddir(directory, options as never));
+  const originalOpen = fs.openSync;
+  t.mock.method(fs, "openSync", (file: string, flags: number) => originalOpen(
+    path.dirname(file) === agentsDir ? path.join(fixtureDir, path.basename(file)) : file, flags,
+  ));
+  // Keep the pre-admission implementation testable for the red regression run.
+  const originalRead = fs.readFileSync;
   t.mock.method(fs, "readFileSync", (file: string, options: unknown) => {
-    if (path.dirname(file) !== agentsDir) return originalRead(file, options as never);
-    const value = definitions[path.basename(file)];
-    if (value instanceof Error) throw value;
-    return value;
+    return originalRead(typeof file === "string" && path.dirname(file) === agentsDir
+      ? path.join(fixtureDir, path.basename(file)) : file, options as never);
   });
   const warn = t.mock.method(console, "warn", () => undefined);
   syncBuiltinESMExports();
   t.after(() => {
     try { assert.equal(warn.mock.callCount(), 0, "discovery must not write to stderr"); }
-    finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+    finally { t.mock.restoreAll(); syncBuiltinESMExports(); fs.rmSync(fixtureDir, { recursive: true, force: true }); }
   });
-  return { agentsDir };
+  return { agentsDir, fixtureDir };
 }
 
 function definition(fields: string) {
@@ -86,7 +95,7 @@ test("all duplicate names are excluded and cannot be invoked", async (t) => {
   });
   const { agents, diagnostics } = discoverBundledAgents();
   assert.deepEqual(agents.map((agent) => agent.name), ["valid"]);
-  assert.deepEqual(diagnostics, ["one.md", "two.md", "three.md"].map((name) => `Duplicate bundled agent definition: ${name}`));
+  assert.deepEqual([...diagnostics].sort(), ["one.md", "two.md", "three.md"].map((name) => `Duplicate bundled agent definition: ${name}`).sort());
   assert.ok(diagnostics.every((message) => !message.includes(agentsDir) && !message.includes("Private prompt")));
   let tool: {
     execute: (...args: unknown[]) => Promise<{ content: { text: string }[] }>;
@@ -119,4 +128,62 @@ test("read errors are isolated and diagnostics omit error contents and full path
   assert.deepEqual(agents.map((agent) => agent.name), ["valid"]);
   assert.deepEqual(diagnostics, ["Invalid bundled agent definition: unreadable.md"]);
   assert.ok(!diagnostics[0].includes(agentsDir));
+});
+
+test("oversize definitions are refused before parsing while regular symlinks remain supported", (t) => {
+  const { fixtureDir } = fixtureDiscovery(t, {
+    "large.md": definition("name: large\ndescription: too large") + "x".repeat(256 * 1024),
+    "valid.md": definition("name: valid\ndescription: healthy"),
+  });
+  const linked = path.join(fixtureDir, "linked.txt");
+  fs.writeFileSync(linked, definition("name: linked\ndescription: supported"));
+  fs.symlinkSync(linked, path.join(fixtureDir, "linked.md"));
+  const discovery = discoverBundledAgents();
+  assert.deepEqual(discovery.agents.map(agent => agent.name), ["linked", "valid"]);
+  assert.deepEqual(discovery.diagnostics, ["Invalid bundled agent definition: large.md"]);
+});
+
+test("descriptor growth cannot bypass the actual definition byte budget and closes the descriptor", (t) => {
+  fixtureDiscovery(t, {
+    "growing.md": definition("name: growing\ndescription: starts small") + "x".repeat(256 * 1024),
+    "valid.md": definition("name: valid\ndescription: healthy"),
+  });
+  const stat = fs.fstatSync;
+  t.mock.method(fs, "fstatSync", (fd: number) => Object.assign(stat(fd), { size: 1 }));
+  const close = t.mock.method(fs, "closeSync", fs.closeSync);
+  const read = t.mock.method(fs, "readSync", fs.readSync);
+  syncBuiltinESMExports();
+  const discovery = discoverBundledAgents();
+  assert.deepEqual(discovery.agents.map(agent => agent.name), ["valid"]);
+  assert.equal(close.mock.callCount(), 2);
+  const totalBytes = read.mock.calls.reduce((sum, call) => sum + Number(call.result), 0);
+  assert.ok(totalBytes < 257 * 1024, "reads stop at the budget plus one overflow byte");
+});
+
+test("symlink to FIFO is refused without blocking discovery", (t) => {
+  const { fixtureDir } = fixtureDiscovery(t, { "valid.md": definition("name: valid\ndescription: healthy") });
+  const fifo = path.join(fixtureDir, "pipe");
+  const mkfifo = childProcess.spawnSync("mkfifo", [fifo]);
+  assert.equal(mkfifo.status, 0);
+  fs.symlinkSync(fifo, path.join(fixtureDir, "pipe.md"));
+  // Isolate the potentially blocking old reader in a disposable process.
+  const moduleUrl = new URL("../extensions/agent_workflow/agents.ts", import.meta.url).href;
+  const script = `import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { discoverBundledAgents } from ${JSON.stringify(moduleUrl)};
+    const root = discoverBundledAgents().agentsDir;
+    const fixture = ${JSON.stringify(fixtureDir)};
+    const readdir = fs.readdirSync, open = fs.openSync, read = fs.readFileSync;
+    fs.readdirSync = (dir, opts) => readdir(dir === root ? fixture : dir, opts);
+    const mapped = file => typeof file === 'string' && file.startsWith(root + '/') ? fixture + file.slice(root.length) : file;
+    fs.openSync = (file, ...args) => open(mapped(file), ...args);
+    fs.readFileSync = (file, ...args) => read(mapped(file), ...args);
+    syncBuiltinESMExports();
+    console.log(JSON.stringify(discoverBundledAgents()));`;
+  const probe = childProcess.spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { timeout: 10000, killSignal: "SIGKILL", encoding: "utf8" });
+  assert.equal(probe.error, undefined, "discovery must not wait for a FIFO writer");
+  assert.equal(probe.status, 0, probe.stderr);
+  const discovery = JSON.parse(probe.stdout);
+  assert.deepEqual(discovery.agents.map((agent: { name: string }) => agent.name), ["valid"]);
+  assert.deepEqual(discovery.diagnostics, ["Invalid bundled agent definition: pipe.md"]);
 });

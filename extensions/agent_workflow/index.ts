@@ -564,6 +564,7 @@ async function runSingleAgent(
         try {
           event = JSON.parse(line);
         } catch {
+          failProtocol("Agent protocol contains invalid JSON.");
           return;
         }
 

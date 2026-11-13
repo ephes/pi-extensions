@@ -56,6 +56,12 @@ otherwise valid definitions sharing an exact, case-sensitive name are excluded
 with filename-only warnings so no ambiguous agent can be invoked. Discovery
 warnings are included in each tool result and its display, without raw stderr
 writes.
+Definitions must resolve to regular files of at most 256 KiB, including bytes
+added while reading. Symlinks to regular files remain supported, including
+targets outside `agents/`; directories, devices and FIFOs are refused through
+the opened descriptor. Opening uses nonblocking mode so a FIFO target cannot
+stall discovery. Each invalid file gets the same filename-only warning and does
+not hide other valid agents.
 
 Bundled agent frontmatter prefers these model IDs:
 
@@ -186,7 +192,10 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - Parallel prompt/setup failures become per-task failures; started siblings finish and queued tasks continue unless explicitly cancelled. Results retain input order. Success counts, task summaries, display icons and the tool error flag use the same verdict; any failed task marks the batch as an error while retaining every result.
 
 Agent workflow stdout uses streaming, strict UTF-8 decoding, including the final
-line at EOF. The 1 MiB ceiling applies to every event, including cumulative
+line at EOF. Every nonblank line must be complete JSON; malformed or incomplete
+JSON fails even after a completed answer. There is no supported non-JSON
+preamble. Blank lines and unconsumed valid JSON event types remain ignored.
+Diagnostics never include the malformed line. The 1 MiB ceiling applies to every event, including cumulative
 `agent_end` / `turn_end` events and partial `message_update` events. Runs with
 larger events fail even if earlier work completed; this is a deliberate bounded
 protocol contract. Invalid or incomplete UTF-8 and protocol lines exceeding 1 MiB fail
