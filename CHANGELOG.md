@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Require nonnegative safe-integer token counts and exact aggregate counts before retaining assistant messages; keep fractional finite costs and provider metadata, and diagnose unsafe display totals across agents.
+
+- Reject assistant/user messages in `tool_result_end` before retention or accounting, stopping chained handoffs even after an earlier completed answer; preserve tool-result messages in both consumed event forms.
+
 - Coalesce intermediate workflow progress at 100 ms and project bounded previews before cloning; flush complete final results and preserve observer-failure/cancellation cleanup.
 - Bound web dispatcher destruction to 100 ms, stop waiting on cancellation, and preserve primary fetch outcomes without exposing cleanup errors or leaving late rejections unobserved.
 
