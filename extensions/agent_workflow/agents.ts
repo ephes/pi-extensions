@@ -34,7 +34,7 @@ function readDefinition(filePath: string): string {
     let used = 0;
     while (used < bytes.length) {
       const read = fs.readSync(fd, bytes, used, bytes.length - used, null);
-      if (read === 0) return bytes.subarray(0, used).toString("utf8");
+      if (read === 0) return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, used));
       used += read;
       if (used > MAX_DEFINITION_BYTES) break;
     }

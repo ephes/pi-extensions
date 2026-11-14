@@ -7,6 +7,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { parseUnambiguousJson } from "../../shared/json.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
 import { resolveAgentModel, type ModelRef } from "./model_resolution.js";
 
@@ -18,6 +19,8 @@ const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const MAX_MESSAGES = 256;
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
+const MAX_TASK_INPUT_BYTES = 1024 * 1024;
+const MAX_WORKFLOW_INPUT_BYTES = 4 * 1024 * 1024;
 const COLLAPSED_ITEM_COUNT = 10;
 const MAX_CHAIN_CONTEXT_CHARS = 12000;
 const PROGRESS_INTERVAL_MS = 100;
@@ -47,7 +50,8 @@ interface SingleResult {
   stopReason?: string;
   errorMessage?: string;
   step?: number;
-  omitted?: { messages: number; taskChars: number; stderrBytes: number };
+  omitted?: { messages: number; taskChars: number; stderrBytes: number; outputChars?: number; metadataChars?: number };
+  output?: string;
   handoff?: { sourceChars: number; insertedChars: number; truncated: boolean };
 }
 
@@ -163,9 +167,9 @@ function formatToolCall(toolName: string, args: Record<string, unknown>, themeFg
   }
 }
 
-// Keep bulk chain details bounded while preserving one outcome record per step.
-function boundChainDetails(results: SingleResult[]): void {
-  let messageBytes = MAX_MESSAGE_BYTES;
+// Keep bulk workflow details bounded while preserving one outcome per task/step.
+function boundWorkflowDetails(results: SingleResult[], mode: "Chain" | "Parallel"): void {
+  let messageBytes = MAX_MESSAGE_BYTES - results.length * 2 - MAX_MESSAGES;
   let messages = MAX_MESSAGES;
   let taskChars = MAX_CHAIN_CONTEXT_CHARS;
   let stderrBytes = MAX_STDERR_BYTES;
@@ -192,11 +196,12 @@ function boundChainDetails(results: SingleResult[]): void {
     if (omittedMessages || omittedTaskChars || start) {
       const omitted = result.omitted ?? { messages: 0, taskChars: 0, stderrBytes: 0 };
       result.omitted = {
+        ...omitted,
         messages: omitted.messages + omittedMessages,
         taskChars: omitted.taskChars + omittedTaskChars,
         stderrBytes: omitted.stderrBytes + start,
       };
-      const warning = "Chain result details truncated (4 MiB / 256 messages, 12,000 task characters, 64 KiB stderr); see per-step omitted counts.";
+      const warning = `${mode} result details truncated (4 MiB / 256 messages, 12,000 task characters, 64 KiB stderr); see per-${mode === "Chain" ? "step" : "task"} omitted counts.`;
       if (!result.warnings.includes(warning)) result.warnings.push(warning);
     }
   }
@@ -274,6 +279,52 @@ function getFinalOutput(messages: Message[]): string {
   return "";
 }
 
+function getResultOutput(result: SingleResult): string {
+  return result.output ?? getFinalOutput(result.messages);
+}
+
+// JSON byte accounting includes escaping and truncation notices.
+function boundAnswer(text: string, bytes: number): { text: string; omittedChars: number } {
+  if (Buffer.byteLength(JSON.stringify(text)) <= bytes) return { text, omittedChars: 0 };
+  const notice = "\n[Parallel answer truncated to the shared output budget.]";
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(JSON.stringify(text.slice(0, middle) + notice)) <= bytes) low = middle;
+    else high = middle - 1;
+  }
+  if (low && /[\uD800-\uDBFF]/.test(text[low - 1])) low -= 1;
+  return { text: text.slice(0, low) + notice, omittedChars: text.length - low };
+}
+
+function boundParallelDetails(results: SingleResult[], taskCount: number): void {
+  // Keep a fair, independent answer share before evicting any history.
+  for (const result of results) {
+    if (result.output !== undefined) continue;
+    const answer = getFinalOutput(result.messages);
+    const bounded = boundAnswer(answer, Math.floor(1024 * 1024 / taskCount));
+    result.output = bounded.text;
+    let metadataChars = 0;
+    for (const field of ["agent", "model", "requestedModel", "selectedModel", "observedModel", "errorMessage"] as const) {
+      const value = result[field];
+      if (value === undefined) continue;
+      const limit = field === "errorMessage" ? 2048 : 512;
+      metadataChars += Math.max(0, value.length - limit);
+      result[field] = value.slice(0, limit);
+    }
+    const warnings = result.warnings.slice(0, 8).map(warning => warning.slice(0, 512));
+    metadataChars += result.warnings.join("").length - warnings.join("").length;
+    result.warnings = warnings;
+    if (bounded.omittedChars || metadataChars) {
+      result.omitted = { messages: 0, taskChars: 0, stderrBytes: 0, ...result.omitted,
+        outputChars: bounded.omittedChars, metadataChars };
+      result.warnings.push("Parallel result details truncated; see omitted counts and retained answer.");
+    }
+  }
+  boundWorkflowDetails(results, "Parallel");
+}
+
 // Preview only bounded fields before cloning: never serialize retained history
 // or arbitrary provider/tool metadata to construct an intermediate update.
 function progressSnapshot(partial: ToolResult): ToolResult {
@@ -348,13 +399,13 @@ function isSuccessful(result: SingleResult): boolean {
 }
 
 function getErrorText(result: SingleResult): string {
-  const baseText = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
+  const baseText = result.errorMessage || result.stderr || getResultOutput(result) || "(no output)";
   const warnings = result.warnings.filter((warning) => warning !== baseText);
   return combineTextWithWarnings(baseText, warnings);
 }
 
 function getSuccessText(result: SingleResult): string {
-  return combineTextWithWarnings(getFinalOutput(result.messages) || "(no output)", result.warnings);
+  return combineTextWithWarnings(getResultOutput(result) || "(no output)", result.warnings);
 }
 
 async function mapWithConcurrencyLimit<TInput, TOutput>(
@@ -557,6 +608,7 @@ async function runSingleAgent(
       let closed = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
       let closedCode = 1;
+      let cleanupFailed = false;
       const signalGroup = (groupSignal: "SIGTERM" | "SIGKILL" | 0): boolean => {
         // detached:true creates a new group with the child's PID, never the host's.
         if (!proc.pid || proc.pid === process.pid) return false;
@@ -565,6 +617,7 @@ async function runSingleAgent(
           return true;
         } catch (error) {
           if ((error as { code?: string }).code === "ESRCH") return false;
+          cleanupFailed = true;
           warnOnce("Unable to signal the owned agent process group.");
           return true; // Still attempt bounded escalation when the group may exist.
         }
@@ -577,15 +630,25 @@ async function runSingleAgent(
         if (settled) return;
         settled = true;
         cleanup();
-        resolve(code);
+        if (cleanupFailed) currentResult.errorMessage = `${currentResult.errorMessage ? currentResult.errorMessage + " " : ""}Unable to retire the owned agent process group; cleanup could not be confirmed.`;
+        resolve(cleanupFailed ? 1 : code);
       };
       const terminate = () => {
         if (settled || killTimer) return;
         signalGroup("SIGTERM");
         killTimer = setTimeout(() => {
           signalGroup("SIGKILL");
-          killTimer = undefined;
-          if (closed) finish(closedCode);
+          let remainingChecks = 10;
+          const confirm = () => {
+            if (signalGroup(0) && remainingChecks-- > 0) {
+              killTimer = setTimeout(confirm, 100);
+              return;
+            }
+            if (signalGroup(0)) cleanupFailed = true;
+            killTimer = undefined;
+            if (closed) finish(closedCode);
+          };
+          confirm();
         }, 5000);
       };
 
@@ -607,7 +670,7 @@ async function runSingleAgent(
 
         let event: unknown;
         try {
-          event = JSON.parse(line);
+          event = parseUnambiguousJson(line);
         } catch {
           failProtocol("Agent protocol contains invalid JSON.");
           return;
@@ -702,6 +765,8 @@ async function runSingleAgent(
 
       });
 
+      // exit can precede close when descendants inherited the output pipes.
+      proc.on("exit", () => { if (signalGroup(0)) terminate(); });
       proc.on("close", (code, closeSignal) => {
         closed = true;
         let start = 0;
@@ -730,7 +795,7 @@ async function runSingleAgent(
         }
         closedCode = protocolError || signal?.reason === PROGRESS_FAILURE || closeSignal ? 1 : (code ?? 1);
         // close can precede descendant exit when descendants redirected their pipes.
-        if (killTimer && signalGroup(0)) return;
+        if (signalGroup(0)) { terminate(); return; }
         finish(closedCode);
       });
 
@@ -866,6 +931,21 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           };
         }
 
+        // Admit the complete submitted workflow before creating any prompt files.
+        // System prompts count once per invocation; prepared chain context has its
+        // separate, existing 12,000-character allowance.
+        const submitted = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, task: params.task!, cwd: params.cwd }];
+        let inputBytes = 0;
+        for (const item of submitted) {
+          const taskBytes = Buffer.byteLength(item.task);
+          inputBytes += taskBytes + Buffer.byteLength(agents.find(agent => agent.name === item.agent)?.systemPrompt ?? "");
+          inputBytes += Buffer.byteLength(item.agent) + Buffer.byteLength(item.cwd ?? "");
+          if (taskBytes > MAX_TASK_INPUT_BYTES || inputBytes > MAX_WORKFLOW_INPUT_BYTES) {
+            return { isError: true, content: toolContent("Agent workflow input exceeds byte limit (1 MiB per task; 4 MiB total including system prompts and task labels)."),
+              details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]) };
+          }
+        }
+
         if (params.chain && params.chain.length > 0) {
           const results: SingleResult[] = [];
           let previousOutput = "";
@@ -903,9 +983,9 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
               makeDetails("chain"),
             );
             result.handoff = handoff;
-            previousOutput = getFinalOutput(result.messages);
+            previousOutput = getResultOutput(result);
             results.push(result);
-            boundChainDetails(results);
+            boundWorkflowDetails(results, "Chain");
 
             const isError = !isSuccessful(result);
             if (isError) {
@@ -973,6 +1053,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
               true,
             );
             allResults[index] = result;
+            boundParallelDetails(allResults.filter(item => item.exitCode !== -1), params.tasks!.length);
             emitParallelUpdate(true);
             // Completion updates can fail after this child has already closed.
             if (progress.signal.aborted) {
@@ -982,6 +1063,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             return result;
           }, signal, (taskItem) => abortedResult(taskItem.agent, taskItem.task));
 
+          boundParallelDetails(results, params.tasks.length);
           const successCount = results.filter(isSuccessful).length;
           const summaries = results.map((result) => {
             const isError = !isSuccessful(result);
@@ -1134,7 +1216,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         const isError = !running && !isSuccessful(single);
         const icon = running ? theme.fg("warning", "⏳") : isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
         const displayItems = getDisplayItems(single.messages);
-        const finalOutput = getFinalOutput(single.messages);
+        const finalOutput = getResultOutput(single);
 
         if (expanded) {
           const container = new Container();
@@ -1190,7 +1272,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           for (const entry of details.results) {
             const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
             const displayItems = getDisplayItems(entry.messages);
-            const finalOutput = getFinalOutput(entry.messages);
+            const finalOutput = getResultOutput(entry);
             container.addChild(new Spacer(1));
             container.addChild(new Text(`${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", entry.agent)} ${itemIcon}`, 0, 0));
             container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", entry.task), 0, 0));
@@ -1239,7 +1321,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         for (const entry of details.results) {
           const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
           const displayItems = getDisplayItems(entry.messages);
-          const finalOutput = getFinalOutput(entry.messages);
+          const finalOutput = getResultOutput(entry);
           container.addChild(new Spacer(1));
           container.addChild(new Text(`${theme.fg("muted", "─── ")}${theme.fg("accent", entry.agent)} ${itemIcon}`, 0, 0));
           container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", entry.task), 0, 0));

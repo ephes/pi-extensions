@@ -141,7 +141,7 @@ test("installed tool policies reject empty and unknown lists without default-cap
 
 test("installed large literal task travels in a private file outside argv and is cleaned", async (t) => {
   const { workflow, installed, cwd } = await installedSmoke(t);
-  const task = "private-task-sentinel 🦊 $& $` $' {previous}\n".repeat(32000) + "  \n";
+  const task = "private-task-sentinel 🦊 $& $` $' {previous}\n".repeat(20000) + "  \n";
   let taskPath = "";
   const spawns = fakeAgents(t, (args) => {
     assert.ok(!args.some((arg) => arg.includes("private-task-sentinel")));

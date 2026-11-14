@@ -187,3 +187,23 @@ test("symlink to FIFO is refused without blocking discovery", (t) => {
   assert.deepEqual(discovery.agents.map((agent: { name: string }) => agent.name), ["valid"]);
   assert.deepEqual(discovery.diagnostics, ["Invalid bundled agent definition: pipe.md"]);
 });
+
+for (const location of ["frontmatter", "body"] as const) {
+  for (const invalid of [[0xff], [0xf0, 0x9f], [0xc0, 0xaf], [0xed, 0xa0, 0x80]]) {
+  test(`malformed UTF-8 ${location} ${Buffer.from(invalid).toString("hex")} is isolated with a filename-only diagnostic`, (t) => {
+    const { fixtureDir } = fixtureDiscovery(t, {
+      "bad.md": definition("name: bad\ndescription: synthetic"),
+      "valid.md": definition("name: gültig\ndescription: Grüße 🦊\nmodel: provider/modèle") + " Grüße 🦊",
+    });
+    const prefix = location === "frontmatter" ? "---\nname: bad" : definition("name: bad\ndescription: synthetic");
+    const suffix = location === "frontmatter" ? "\ndescription: synthetic\n---\nbody" : "";
+    fs.writeFileSync(path.join(fixtureDir, "bad.md"), Buffer.concat([Buffer.from(prefix), Buffer.from(invalid), Buffer.from(suffix)]));
+    const { agents, diagnostics } = discoverBundledAgents();
+    assert.deepEqual(agents.map(agent => agent.name), ["gültig"]);
+    assert.equal(agents[0].description, "Grüße 🦊");
+    assert.equal(agents[0].model, "provider/modèle");
+    assert.equal(agents[0].systemPrompt, "Private prompt content Grüße 🦊");
+    assert.deepEqual(diagnostics, ["Invalid bundled agent definition: bad.md"]);
+  });
+}
+}

@@ -1,3 +1,4 @@
+import { parseUnambiguousJson } from "./json.js";
 import { USER_AGENT } from "./http.js";
 
 const KAGI_API_URL = "https://kagi.com/api/v0/search";
@@ -167,7 +168,7 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
       throw new Error(`Kagi API request failed with HTTP ${response.status}${detail}`);
     }
     let payload: unknown;
-    try { payload = JSON.parse(body); }
+    try { payload = parseUnambiguousJson(body, 64, 16384); }
     catch { throw new Error("Kagi API response is not valid JSON."); }
     return validateResponse(payload);
   };
