@@ -20,6 +20,7 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const MAX_CHAIN_CONTEXT_CHARS = 12000;
+const PROGRESS_INTERVAL_MS = 100;
 
 interface UsageStats {
   input: number;
@@ -67,7 +68,7 @@ type ToolResult = {
   isError?: boolean;
 };
 
-type OnUpdateCallback = (partial: ToolResult) => void;
+type OnUpdateCallback = (partial: ToolResult, flush?: boolean) => void;
 
 function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -272,6 +273,49 @@ function getFinalOutput(messages: Message[]): string {
   return "";
 }
 
+// Preview only bounded fields before cloning: never serialize retained history
+// or arbitrary provider/tool metadata to construct an intermediate update.
+function progressSnapshot(partial: ToolResult): ToolResult {
+  const clip = (value: string | undefined) => value?.slice(0, 512);
+  const results = partial.details.results.slice(-8).map((result): SingleResult => {
+    let preview = "";
+    for (const message of result.messages.slice(-8).reverse()) {
+      if (message.role !== "assistant") continue;
+      for (const part of message.content.slice(0, 16)) {
+        if (part.type !== "text") continue;
+        if (preview) preview += "\n";
+        preview += part.text.slice(0, 2048 - preview.length);
+        if (preview.length >= 2048) break;
+      }
+      if (preview) break;
+    }
+    return {
+      agent: clip(result.agent)!, task: clip(result.task)!, exitCode: result.exitCode,
+      messages: preview ? [{ role: "assistant", content: [{ type: "text", text: preview }] } as Message] : [],
+      stderr: clip(result.stderr)!, warnings: [
+        ...result.warnings.slice(0, 3).map(warning => warning.slice(0, 256)),
+        "Intermediate progress preview; complete details follow at completion.",
+      ],
+      usage: { ...result.usage }, model: clip(result.model), requestedModel: clip(result.requestedModel),
+      selectedModel: clip(result.selectedModel), observedModel: clip(result.observedModel),
+      stopReason: clip(result.stopReason), errorMessage: clip(result.errorMessage), step: result.step,
+      omitted: result.omitted ? { ...result.omitted } : undefined,
+      handoff: result.handoff ? { ...result.handoff } : undefined,
+    };
+  });
+  const latest = results.at(-1);
+  const text = partial.details.mode === "parallel" ? partial.content[0]?.text.slice(0, 2048) :
+    latest ? combineTextWithWarnings(getFinalOutput(latest.messages) || "(running...)", latest.warnings) : "(running...)";
+  return {
+    content: [{ type: "text", text: text || "(running...)" }],
+    details: {
+      mode: partial.details.mode, agentsDir: clip(partial.details.agentsDir)!,
+      diagnostics: partial.details.diagnostics?.slice(0, 4).map(warning => warning.slice(0, 256)), results,
+    },
+    isError: partial.isError,
+  };
+}
+
 function getDisplayItems(messages: Message[]): DisplayItem[] {
   const items: DisplayItem[] = [];
   for (const message of messages) {
@@ -454,12 +498,12 @@ async function runSingleAgent(
     step,
   };
 
-  const emitUpdate = () => {
+  const emitUpdate = (flush = false) => {
     if (!onUpdate) return;
     onUpdate({
-      content: [{ type: "text", text: combineTextWithWarnings(getFinalOutput(currentResult.messages) || "(running...)", currentResult.warnings) }],
+      content: [{ type: "text", text: "(running...)" }],
       details: makeDetails([currentResult]),
-    });
+    }, flush);
   };
 
   try {
@@ -564,6 +608,7 @@ async function runSingleAgent(
         try {
           event = JSON.parse(line);
         } catch {
+          failProtocol("Agent protocol contains invalid JSON.");
           return;
         }
 
@@ -672,6 +717,9 @@ async function runSingleAgent(
           catch { failProtocol("Agent protocol contains incomplete UTF-8."); }
           if (!protocolError && buffer.trim()) processLine(buffer);
         }
+        // Flush while the supervisor still owns this group, so observer failure
+        // at EOF can terminate descendants before input-file cleanup.
+        if (!protocolError) emitUpdate(true);
         if (closeSignal) {
           currentResult.errorMessage = `${currentResult.errorMessage ? currentResult.errorMessage + " " : ""}Agent subprocess terminated by ${closeSignal}. Output may be incomplete.`;
         } else if (code === null) {
@@ -762,15 +810,24 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       const progress = new AbortController();
       const deliverUpdate = onUpdate;
       signal = signal ? AbortSignal.any([signal, progress.signal]) : progress.signal;
-      onUpdate = deliverUpdate ? (partial) => {
-        if (progress.signal.aborted) return;
+      let pending: ToolResult | undefined;
+      let progressTimer: ReturnType<typeof setTimeout> | undefined;
+      const flushProgress = () => {
+        if (progressTimer) clearTimeout(progressTimer);
+        progressTimer = undefined;
+        const partial = pending;
+        pending = undefined;
+        if (!partial || progress.signal.aborted) return;
         try {
-          const snapshot = structuredClone(partial);
-          const details = snapshot.details as AgentWorkflowDetails | undefined;
-          if (details?.mode === "chain") boundChainDetails(details.results);
-          deliverUpdate(snapshot);
+          deliverUpdate!(structuredClone(progressSnapshot(partial)));
         }
         catch { progress.abort(PROGRESS_FAILURE); }
+        if (!progress.signal.aborted) progressTimer = setTimeout(flushProgress, PROGRESS_INTERVAL_MS);
+      };
+      const workflowUpdate: OnUpdateCallback | undefined = deliverUpdate ? (partial, flush) => {
+        if (progress.signal.aborted) return;
+        pending = partial;
+        if (flush || !progressTimer) flushProgress();
       } : undefined;
       const discovery = discoverBundledAgents();
       const agents = discovery.agents;
@@ -798,176 +855,198 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         { type: "text", text: combineTextWithWarnings(text, discovery.diagnostics) },
       ];
 
-      if (modeCount !== 1) {
+      const runWorkflow = async (): Promise<ToolResult> => {
+        if (modeCount !== 1) {
+          return {
+            content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
+            details: makeDetails("single")([]),
+          };
+        }
+
+        if (params.chain && params.chain.length > 0) {
+          const results: SingleResult[] = [];
+          let previousOutput = "";
+
+          for (let index = 0; index < params.chain.length; index += 1) {
+            const step = params.chain[index];
+            const placeholders = step.task.match(/\{previous\}/g)?.length ?? 0;
+            const context = truncatePreviousOutput(previousOutput, Math.floor(MAX_CHAIN_CONTEXT_CHARS / Math.max(1, placeholders)));
+            const handoff = { sourceChars: previousOutput.length, insertedChars: context.length * placeholders,
+              truncated: placeholders > 0 && context.length < previousOutput.length };
+            const taskWithContext = step.task.replace(/\{previous\}/g, () => context);
+            const chainUpdate: OnUpdateCallback | undefined = workflowUpdate
+              ? (partial, flush) => {
+                  const current = partial.details?.results[0];
+                  if (!current) return;
+                  current.handoff = handoff;
+                  workflowUpdate({
+                    content: partial.content,
+                    details: makeDetails("chain")([...results.slice(-7), current]),
+                  }, flush);
+                }
+              : undefined;
+
+            const result = await runSingleAgent(
+              ctx.cwd,
+              agents,
+              availableModels,
+              currentModel,
+              step.agent,
+              taskWithContext,
+              step.cwd,
+              index + 1,
+              signal,
+              chainUpdate,
+              makeDetails("chain"),
+            );
+            result.handoff = handoff;
+            previousOutput = getFinalOutput(result.messages);
+            results.push(result);
+            boundChainDetails(results);
+
+            const isError = !isSuccessful(result);
+            if (isError) {
+              return {
+                content: toolContent(`Chain stopped at step ${index + 1} (${step.agent}): ${getErrorText(result)}`),
+                details: makeDetails("chain")(results),
+                isError: true,
+              };
+            }
+
+          }
+
+          return {
+            content: toolContent(getSuccessText(results[results.length - 1])),
+            details: makeDetails("chain")(results),
+          };
+        }
+
+        if (params.tasks && params.tasks.length > 0) {
+          if (params.tasks.length > MAX_PARALLEL_TASKS) {
+            return {
+              content: toolContent(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`),
+              details: makeDetails("parallel")([]),
+            };
+          }
+
+          const allResults: SingleResult[] = new Array(params.tasks.length).fill(null).map((_, index) => ({
+            agent: params.tasks?.[index]?.agent ?? "unknown",
+            task: params.tasks?.[index]?.task ?? "",
+            exitCode: -1,
+            messages: [],
+            stderr: "",
+            warnings: [],
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+          }));
+
+          const emitParallelUpdate = (flush = false) => {
+            if (!workflowUpdate) return;
+            const running = allResults.filter((result) => result.exitCode === -1).length;
+            const done = allResults.filter((result) => result.exitCode !== -1).length;
+            workflowUpdate({
+              content: [{ type: "text", text: `Parallel: ${done}/${allResults.length} done, ${running} running...` }],
+              details: makeDetails("parallel")([...allResults]),
+            }, flush);
+          };
+
+          const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (taskItem, index) => {
+            const result = await runSingleAgent(
+              ctx.cwd,
+              agents,
+              availableModels,
+              currentModel,
+              taskItem.agent,
+              taskItem.task,
+              taskItem.cwd,
+              undefined,
+              signal,
+              (partial, flush) => {
+                const current = partial.details?.results[0];
+                if (!current) return;
+                allResults[index] = current;
+                emitParallelUpdate(flush);
+              },
+              makeDetails("parallel"),
+              true,
+            );
+            allResults[index] = result;
+            emitParallelUpdate(true);
+            // Completion updates can fail after this child has already closed.
+            if (progress.signal.aborted) {
+              result.exitCode = 1;
+              result.errorMessage = PROGRESS_FAILURE.message;
+            }
+            return result;
+          }, signal, (taskItem) => abortedResult(taskItem.agent, taskItem.task));
+
+          const successCount = results.filter(isSuccessful).length;
+          const summaries = results.map((result) => {
+            const isError = !isSuccessful(result);
+            const resultText = isError ? getErrorText(result) : getSuccessText(result);
+            const preview = resultText.length > 100 ? `${resultText.slice(0, 100)}...` : resultText;
+            return `[${result.agent}] ${isError ? "failed" : "completed"}: ${preview || "(no output)"}`;
+          });
+
+          return {
+            isError: results.some((result) => !isSuccessful(result)) || undefined,
+            content: toolContent(`Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
+            details: makeDetails("parallel")(results),
+          };
+        }
+
+        if (params.agent && params.task) {
+          const result = await runSingleAgent(
+            ctx.cwd,
+            agents,
+            availableModels,
+            currentModel,
+            params.agent,
+            params.task,
+            params.cwd,
+            undefined,
+            signal,
+            workflowUpdate,
+            makeDetails("single"),
+          );
+          const isError = !isSuccessful(result);
+          if (isError) {
+            return {
+              content: toolContent(`Agent ${result.agent} failed: ${getErrorText(result)}`),
+              details: makeDetails("single")([result]),
+              isError: true,
+            };
+          }
+          return {
+            content: toolContent(getSuccessText(result)),
+            details: makeDetails("single")([result]),
+          };
+        }
+
         return {
           content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
           details: makeDetails("single")([]),
         };
-      }
-
-      if (params.chain && params.chain.length > 0) {
-        const results: SingleResult[] = [];
-        let previousOutput = "";
-
-        for (let index = 0; index < params.chain.length; index += 1) {
-          const step = params.chain[index];
-          const placeholders = step.task.match(/\{previous\}/g)?.length ?? 0;
-          const context = truncatePreviousOutput(previousOutput, Math.floor(MAX_CHAIN_CONTEXT_CHARS / Math.max(1, placeholders)));
-          const handoff = { sourceChars: previousOutput.length, insertedChars: context.length * placeholders,
-            truncated: placeholders > 0 && context.length < previousOutput.length };
-          const taskWithContext = step.task.replace(/\{previous\}/g, () => context);
-          const chainUpdate: OnUpdateCallback | undefined = onUpdate
-            ? (partial) => {
-                const current = partial.details?.results[0];
-                if (!current) return;
-                current.handoff = handoff;
-                onUpdate({
-                  content: partial.content,
-                  details: makeDetails("chain")([...results, current]),
-                });
-              }
-            : undefined;
-
-          const result = await runSingleAgent(
-            ctx.cwd,
-            agents,
-            availableModels,
-            currentModel,
-            step.agent,
-            taskWithContext,
-            step.cwd,
-            index + 1,
-            signal,
-            chainUpdate,
-            makeDetails("chain"),
-          );
-          result.handoff = handoff;
-          previousOutput = getFinalOutput(result.messages);
-          results.push(result);
-          boundChainDetails(results);
-
-          const isError = !isSuccessful(result);
-          if (isError) {
-            return {
-              content: toolContent(`Chain stopped at step ${index + 1} (${step.agent}): ${getErrorText(result)}`),
-              details: makeDetails("chain")(results),
-              isError: true,
-            };
-          }
-
-        }
-
-        return {
-          content: toolContent(getSuccessText(results[results.length - 1])),
-          details: makeDetails("chain")(results),
-        };
-      }
-
-      if (params.tasks && params.tasks.length > 0) {
-        if (params.tasks.length > MAX_PARALLEL_TASKS) {
-          return {
-            content: toolContent(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`),
-            details: makeDetails("parallel")([]),
-          };
-        }
-
-        const allResults: SingleResult[] = new Array(params.tasks.length).fill(null).map((_, index) => ({
-          agent: params.tasks?.[index]?.agent ?? "unknown",
-          task: params.tasks?.[index]?.task ?? "",
-          exitCode: -1,
-          messages: [],
-          stderr: "",
-          warnings: [],
-          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-        }));
-
-        const emitParallelUpdate = () => {
-          if (!onUpdate) return;
-          const running = allResults.filter((result) => result.exitCode === -1).length;
-          const done = allResults.filter((result) => result.exitCode !== -1).length;
-          onUpdate({
-            content: toolContent(`Parallel: ${done}/${allResults.length} done, ${running} running...`),
-            details: makeDetails("parallel")([...allResults]),
-          });
-        };
-
-        const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (taskItem, index) => {
-          const result = await runSingleAgent(
-            ctx.cwd,
-            agents,
-            availableModels,
-            currentModel,
-            taskItem.agent,
-            taskItem.task,
-            taskItem.cwd,
-            undefined,
-            signal,
-            (partial) => {
-              const current = partial.details?.results[0];
-              if (!current) return;
-              allResults[index] = current;
-              emitParallelUpdate();
-            },
-            makeDetails("parallel"),
-            true,
-          );
-          allResults[index] = result;
-          emitParallelUpdate();
-          // Completion updates can fail after this child has already closed.
-          if (progress.signal.aborted) {
-            result.exitCode = 1;
-            result.errorMessage = PROGRESS_FAILURE.message;
-          }
-          return result;
-        }, signal, (taskItem) => abortedResult(taskItem.agent, taskItem.task));
-
-        const successCount = results.filter(isSuccessful).length;
-        const summaries = results.map((result) => {
-          const isError = !isSuccessful(result);
-          const resultText = isError ? getErrorText(result) : getSuccessText(result);
-          const preview = resultText.length > 100 ? `${resultText.slice(0, 100)}...` : resultText;
-          return `[${result.agent}] ${isError ? "failed" : "completed"}: ${preview || "(no output)"}`;
-        });
-
-        return {
-          isError: results.some((result) => !isSuccessful(result)) || undefined,
-          content: toolContent(`Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`),
-          details: makeDetails("parallel")(results),
-        };
-      }
-
-      if (params.agent && params.task) {
-        const result = await runSingleAgent(
-          ctx.cwd,
-          agents,
-          availableModels,
-          currentModel,
-          params.agent,
-          params.task,
-          params.cwd,
-          undefined,
-          signal,
-          onUpdate,
-          makeDetails("single"),
-        );
-        const isError = !isSuccessful(result);
-        if (isError) {
-          return {
-            content: toolContent(`Agent ${result.agent} failed: ${getErrorText(result)}`),
-            details: makeDetails("single")([result]),
-            isError: true,
-          };
-        }
-        return {
-          content: toolContent(getSuccessText(result)),
-          details: makeDetails("single")([result]),
-        };
-      }
-
-      return {
-        content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
-        details: makeDetails("single")([]),
       };
+      try {
+        const result = await runWorkflow();
+        if (progressTimer) clearTimeout(progressTimer);
+        progressTimer = undefined;
+        pending = undefined;
+        if (deliverUpdate && !progress.signal.aborted) {
+          try { deliverUpdate(structuredClone(result)); }
+          catch {
+            progress.abort(PROGRESS_FAILURE);
+            result.isError = true;
+            result.content = toolContent(PROGRESS_FAILURE.message);
+            const last = result.details.results.at(-1);
+            if (last) { last.exitCode = 1; last.errorMessage = PROGRESS_FAILURE.message; }
+          }
+        }
+        return result;
+      } finally {
+        if (progressTimer) clearTimeout(progressTimer);
+        pending = undefined;
+      }
     },
 
     renderCall(args, theme) {

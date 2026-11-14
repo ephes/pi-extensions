@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Coalesce intermediate workflow progress at 100 ms and project bounded previews before cloning; flush complete final results and preserve observer-failure/cancellation cleanup.
+- Bound web dispatcher destruction to 100 ms, stop waiting on cancellation, and preserve primary fetch outcomes without exposing cleanup errors or leaving late rejections unobserved.
+
+- Admit bundled definitions through bounded regular-file descriptors (256 KiB), preserving regular-file symlinks and refusing FIFO targets without blocking discovery.
+- Fail and reap agent subprocesses on malformed or incomplete JSON stdout, including corruption after a completed answer; keep raw protocol lines out of diagnostics.
+
 - Reject explicit empty or unknown bundled-agent tool policies instead of falling back to default capabilities; retain omitted-field defaults and exact built-in allowlists.
 - Verify against Pi’s own `@file` processing that the delegated task file becomes the exact `Task: …` initial message, and report agent input file write failures as “Unable to create agent input files.”
 - Pass delegated tasks through private temporary files using Pi’s public file input, keeping large and private task text out of process arguments while preserving literal text and existing cleanup and chain limits.

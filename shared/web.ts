@@ -17,6 +17,7 @@ export interface ReadablePage {
 const MAX_FETCH_BYTES = 1024 * 1024 * 2;
 const MAX_REDIRECTS = 5;
 const FETCH_DEADLINE_MS = 30_000;
+const DISPATCHER_CLEANUP_MS = 100;
 
 const reComments = /<!--[\s\S]*?-->/g;
 const reNoise = /<(script|style|noscript|svg|iframe|nav|header|footer|aside)[^>]*>[\s\S]*?<\/\1>/gi;
@@ -134,8 +135,22 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         outputTruncated,
       };
     } finally {
-      await dispatcher.destroy();
+      await destroyDispatcher(dispatcher, signal);
     }
+  }
+}
+
+async function destroyDispatcher(dispatcher: Agent, signal: AbortSignal): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const deadline = new Promise<void>(resolve => { timer = setTimeout(resolve, DISPATCHER_CLEANUP_MS); });
+    // The race observes late rejections too. Cancellation stops waiting at once;
+    // destroy still owns socket teardown through Undici's public lifecycle API.
+    await withAbort(Promise.race([dispatcher.destroy(), deadline]), signal);
+  } catch {
+    // Cleanup cannot replace the primary result/error or expose transport URLs.
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

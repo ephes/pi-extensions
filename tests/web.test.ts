@@ -108,6 +108,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import http from "node:http";
 import tls from "node:tls";
+import { Agent } from "undici";
 import { fetchReadablePage } from "../shared/web.js";
 
 async function fixture(t: TestContext, handler: http.RequestListener) {
@@ -144,6 +145,65 @@ const approved = [
   { address: "2606:4700:4700::1111", family: 6 },
   { address: "1.1.1.1", family: 4 },
 ];
+
+for (const cleanup of ["reject", "stall", "throw"] as const) {
+  for (const primary of ["success", "body-failure", "abort"] as const) {
+    test(`dispatcher cleanup ${cleanup} preserves ${primary} within its budget`, async (t) => {
+      const controller = new AbortController();
+      t.mock.method(dns, "lookup", async () => approved);
+      await fixture(t, (_request, response) => {
+        response.writeHead(200, { "content-type": "text/plain" });
+        if (primary === "success") response.end("safe content");
+        else {
+          response.write("partial body");
+          setImmediate(() => {
+            if (primary === "abort") controller.abort(new Error("controlled cancellation"));
+            else response.destroy();
+          });
+        }
+      });
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const destroy: (this: Agent, error: Error | null, callback: () => void) => void = Agent.prototype.destroy;
+      let started!: () => void;
+      const cleanupStarted = new Promise<void>(resolve => { started = resolve; });
+      let rejectLate!: (reason: unknown) => void;
+      let calls = 0;
+      t.mock.method(Agent.prototype, "destroy", function (this: Agent) {
+        calls++;
+        // Close real fixture sockets, then substitute the lifecycle settlement.
+        destroy.call(this, null, () => {});
+        started();
+        if (cleanup === "throw") throw new Error("private cleanup https://secret.example/token?signature=private");
+        if (cleanup === "reject") return Promise.reject(new Error("private cleanup https://secret.example/token?signature=private"));
+        return new Promise<void>((_resolve, reject) => { rejectLate = reject; });
+      });
+      let settled = false;
+      let outcome: { page?: Awaited<ReturnType<typeof fetchReadablePage>>; error?: unknown } = {};
+      const observed = fetchReadablePage("http://public.example/?signature=private", undefined, controller.signal).then(
+        page => { outcome = { page }; settled = true; },
+        error => { outcome = { error }; settled = true; },
+      );
+      await cleanupStarted;
+      // Allow immediate rejection / cancellation to settle before the deadline.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (primary === "abort") assert.equal(settled, true, "cancellation does not wait for cleanup");
+      t.mock.timers.tick(100);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(settled, true, "cleanup cannot stall the primary outcome");
+      await observed;
+      assert.equal(calls, 1);
+      if (primary === "success") assert.equal(outcome.page?.content, "safe content");
+      else {
+        assert.ok(outcome.error instanceof Error);
+        assert.match(outcome.error.message, primary === "abort" ? /controlled cancellation/ : /Unable to read response/);
+        assert.doesNotMatch(outcome.error.message, /private|secret|signature/);
+      }
+      // A rejection after the cleanup deadline must also be consumed.
+      rejectLate?.(new Error("late private cleanup rejection"));
+      await new Promise<void>(resolve => setImmediate(resolve));
+    });
+  }
+}
 
 test("fetch pins validated IPv4/IPv6 answers without another DNS lookup and preserves Host", async (t) => {
   let lookups = 0;
