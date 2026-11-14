@@ -13,6 +13,10 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Admit exact safe-integer token counts, check aggregate count bounds and keep fractional monetary costs compatible.
+
+- [x] Bind consumed event types to permitted message roles before retention/accounting and stop contradictory tool-result handoffs.
+
 - [x] Coalesced bounded progress previews with complete final snapshots; finite dispatcher cleanup that preserves primary fetch outcomes.
 
 - [x] Bounded regular-file definition admission with compatible symlinks; fail closed on malformed JSON wire output.

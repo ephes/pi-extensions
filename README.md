@@ -203,7 +203,7 @@ protocol contract. Invalid or incomplete UTF-8 and protocol lines exceeding 1 Mi
 the run, terminate the owned process group (SIGTERM, then SIGKILL after five seconds if it remains), and wait
 for close before removing the prompt. Diagnostic stderr keeps only its last
 64 KiB. Message details keep the most recent entries within 4 MiB and 256
-messages, with truncation warnings; usage totals still include evicted messages. Aggregate usage overflow fails the run with a controlled protocol diagnostic and stops chain handoffs; returned totals remain finite. If the display sum across separate agents overflows, it reports that the total exceeds the numeric range and offers per-agent totals in the expanded view.
+messages, with truncation warnings; usage totals still include evicted messages. Aggregate token counts and turn counts must stay within the nonnegative safe-integer range (0 through 9,007,199,254,740,991); monetary cost totals must stay finite. An overflowing addition fails before retaining the message or updating totals, uses a controlled protocol diagnostic and stops chain handoffs. If the display sum across separate agents exceeds either range, it reports that the total exceeds the numeric range and offers per-agent totals in the expanded view.
 Final output and chain handoffs use the retained messages. System and task prompt files have
 owner-only permissions in an owner-private temporary directory. Tasks use Pi’s
 public `@file` input, preserving literal task text (including whitespace) inside
@@ -213,10 +213,16 @@ The same chain handoff limits apply before writing the task file. Both files and
 their directory are removed after child cleanup; failed input file writes also remove
 them before reporting “Unable to create agent input files.” without spawning a child.
 
-Consumed `message_end` and `tool_result_end` envelopes must carry a user,
-assistant, or tool-result message with role-appropriate content blocks. Text,
+Consumed `message_end` envelopes may carry user, assistant, or tool-result
+messages; `tool_result_end` must carry a tool-result message. Contradictory
+event/role pairs fail before retention or usage accounting, including after a
+completed answer, and stop chain handoffs. Both envelopes require
+role-appropriate content blocks. Text,
 thinking, image, and tool-call fields are validated before retention; supplied
-assistant usage must contain finite, nonnegative token and cost values. Optional
+assistant usage must contain nonnegative safe integers for `input`, `output`,
+`cacheRead`, `cacheWrite` and `totalTokens`. Cost fields must be finite and
+nonnegative; fractional monetary values remain supported. `totalTokens` supplies
+the latest context size rather than an accumulated total. Optional
 usage and assistant status fields may be absent in intermediate messages; the final assistant completion must supply `stopReason: "stop"`. Malformed consumed messages
 fail the run with a bounded diagnostic and the same terminate-and-reap lifecycle
 as protocol overflow; unknown event types remain ignored. Unsupported message

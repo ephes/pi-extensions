@@ -554,6 +554,81 @@ const validUsage = {
   input: 2, output: 3, cacheRead: 4, cacheWrite: 5, totalTokens: 14,
   cost: { input: 0, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.1 },
 };
+
+for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) {
+  for (const value of [0.5, Number.MAX_SAFE_INTEGER + 1, Number.MAX_VALUE]) {
+    test(`token count ${field}=${value} fails before retention with cleanup`, async (t) => {
+      const { children, execute, spawnArgs } = setup(t);
+      const run = execute(undefined, true);
+      const child = children[0];
+      const taskPath = spawnArgs[0].at(-1)!.slice(1);
+      child.stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant",
+        content: [{ type: "text", text: "invalid count answer" }], stopReason: "stop",
+        usage: { ...validUsage, [field]: value } } }) + "\n");
+      const signals = [...child.signals];
+      assert.equal(fs.existsSync(taskPath), true);
+      child.emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (children[1]) { children[1].stdout.emit("data", messageLine("unexpected")); children[1].emit("close", 0, null); }
+      const result = await run;
+      assert.equal(result.isError, true);
+      assert.equal(children.length, 1);
+      assert.deepEqual(signals, ["SIGTERM"]);
+      assert.equal(fs.existsSync(path.dirname(taskPath)), false);
+      assert.deepEqual(result.details.results[0].messages, []);
+      assert.equal(result.details.results[0].usage.turns, 0);
+      assert.match(result.details.results[0].errorMessage!, /malformed message/);
+    });
+  }
+}
+
+test("safe integer token boundaries, fractional costs and provider metadata remain accepted", async (t) => {
+  const { children, execute } = setup(t);
+  const run = execute();
+  const usage = { input: Number.MAX_SAFE_INTEGER, output: 0, cacheRead: Number.MAX_SAFE_INTEGER,
+    cacheWrite: 0, totalTokens: Number.MAX_SAFE_INTEGER, cost: validUsage.cost, providerExtra: { value: 0.25 } };
+  const message = { role: "assistant", content: [{ type: "text", text: "answer" }], stopReason: "stop", usage };
+  children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message }) + "\n");
+  children[0].emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.details.results[0].messages, [message]);
+  assert.deepEqual(result.details.results[0].usage, { input: usage.input, output: 0, cacheRead: usage.cacheRead,
+    cacheWrite: 0, contextTokens: usage.totalTokens, cost: 0.1, turns: 1 });
+});
+
+for (const field of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+  for (const extra of [1, 2]) {
+    test(`exact token accumulation ${field} rejects boundary plus ${extra}`, async (t) => {
+      const { children, execute, spawnArgs } = setup(t);
+      const run = execute(undefined, true);
+      const child = children[0];
+      const taskPath = spawnArgs[0].at(-1)!.slice(1);
+      for (const count of [Number.MAX_SAFE_INTEGER - 1, 1, extra]) {
+        const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: validUsage.cost, [field]: count };
+        child.stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant",
+          content: [{ type: "text", text: "answer" }], stopReason: "stop", usage } }) + "\n");
+      }
+      const signals = [...child.signals];
+      assert.equal(fs.existsSync(taskPath), true);
+      child.emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (children[1]) { children[1].stdout.emit("data", messageLine("unexpected")); children[1].emit("close", 0, null); }
+      const result = await run;
+      assert.equal(result.isError, true);
+      assert.equal(children.length, 1);
+      assert.deepEqual(signals, ["SIGTERM"]);
+      assert.equal(fs.existsSync(path.dirname(taskPath)), false);
+      const item = result.details.results[0];
+      assert.equal(item.usage[field], Number.MAX_SAFE_INTEGER);
+      assert.equal(item.usage.turns, 2);
+      assert.equal(item.messages.length, 2, "reject overflowing message before retention");
+      assert.match(item.errorMessage!, /usage.*overflow/i);
+    });
+  }
+}
+
 const invalidMessages: unknown[] = [
   null, {}, { role: "alien", content: [] }, { role: "assistant", content: [], model: {} },
   ...[null, {}, "text", [null], [{ type: "text", text: null }],
@@ -606,6 +681,35 @@ for (const type of ["message_end", "tool_result_end"]) {
   }
 }
 
+for (const role of ["assistant", "user"]) {
+  for (const eof of [false, true]) {
+    test(`tool_result_end rejects ${role} after a completed answer (EOF=${eof})`, async (t) => {
+      const { children, execute, spawnArgs } = setup(t);
+      const run = execute(undefined, true);
+      const child = children[0];
+      const taskPath = spawnArgs[0].at(-1)!.slice(1);
+      child.stdout.emit("data", messageLine("clean answer"));
+      const message = { role, content: [{ type: "text", text: "unaccounted answer" }],
+        stopReason: "error", errorMessage: "unaccounted error", usage: validUsage };
+      child.stdout.emit("data", JSON.stringify({ type: "tool_result_end", message }) + (eof ? "" : "\n"));
+      assert.equal(fs.existsSync(taskPath), true, "input stays until child close");
+      const signals = [...child.signals];
+      child.emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      // Complete an unexpected next step so a regression fails without hanging.
+      if (children[1]) { children[1].stdout.emit("data", messageLine("unexpected")); children[1].emit("close", 0, null); }
+      const result = await run;
+      assert.equal(result.isError, true);
+      assert.equal(children.length, 1, "contradictory envelope must stop handoff");
+      assert.deepEqual(signals, eof ? [] : ["SIGTERM"]);
+      assert.equal(fs.existsSync(path.dirname(taskPath)), false);
+      assert.equal(result.details.results[0].usage.turns, 1);
+      assert.match(result.details.results[0].errorMessage!, /malformed message/);
+      assert.doesNotMatch(JSON.stringify(result), /unaccounted/);
+    });
+  }
+}
+
 test("valid message variants and unknown events remain supported", async (t) => {
   const { children, execute } = setup(t);
   const messages = [
@@ -621,11 +725,13 @@ test("valid message variants and unknown events remain supported", async (t) => 
     const type = message.role === "toolResult" ? "tool_result_end" : "message_end";
     children[0].stdout.emit("data", JSON.stringify({ type, message }) + "\n");
   }
+  // The SDK also delivers tool results through message_end.
+  children[0].stdout.emit("data", JSON.stringify({ type: "message_end", message: messages.at(-1) }) + "\n");
   children[0].stdout.emit("data", '{"type":"future_event","message":null}\n');
   children[0].emit("close", 0, null);
   const result = await run;
   assert.equal(result.isError, undefined);
-  assert.deepEqual(result.details.results[0].messages, messages);
+  assert.deepEqual(result.details.results[0].messages, [...messages, messages.at(-1)]);
   assert.deepEqual(result.details.results[0].usage, { input: 2, output: 3, cacheRead: 4, cacheWrite: 5, cost: 0.1, contextTokens: 14, turns: 1 });
 });
 
@@ -937,7 +1043,7 @@ for (const field of ["input", "output", "cacheRead", "cacheWrite", "cost"] as co
     const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     if (field === "cost") usage.cost.total = Number.MAX_VALUE;
-    else usage[field] = Number.MAX_VALUE;
+    else usage[field] = Number.MAX_SAFE_INTEGER;
     const line = JSON.stringify({ type: "message_end", message: { role: "assistant",
       content: [{ type: "text", text: "answer" }], stopReason: "stop", usage } }) + "\n";
     children[0].stdout.emit("data", line + line);
@@ -956,18 +1062,19 @@ for (const field of ["input", "output", "cacheRead", "cacheWrite", "cost"] as co
   });
 }
 
-for (const parallel of [false, true]) {
-  test(`cross-agent usage overflow renders a controlled diagnostic (parallel=${parallel})`, async (t) => {
+for (const [parallel, field] of [[false, "input"], [true, "input"], [false, "cost"], [true, "cost"]] as const) {
+  test(`cross-agent usage ${field} overflow renders a controlled diagnostic (parallel=${parallel})`, async (t) => {
     const { children, execute, render } = setup(t);
     const run = execute(undefined, !parallel, "test", parallel);
     for (let index = 0; index < (parallel ? 8 : 2); index++) {
-      const usage = { input: Number.MAX_VALUE, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: Number.MAX_VALUE } };
+      const usage = { input: field === "input" ? Number.MAX_SAFE_INTEGER : 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: field === "cost" ? Number.MAX_VALUE : 0.1 } };
       children[index].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "answer" }], stopReason: "stop", usage } }) + "\n");
       children[index].emit("close", 0, null);
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
     const result = await run;
+    assert.equal(result.isError, undefined);
     for (const expanded of [false, true]) {
       const text = render(result, expanded);
       assert.doesNotMatch(text, /Infinity|NaN/);

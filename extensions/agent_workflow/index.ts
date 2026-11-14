@@ -89,7 +89,8 @@ function formatUsageStats(
   },
   model?: string,
 ): string {
-  if (!Object.values(usage).every((value) => value === undefined || Number.isFinite(value))) {
+  if (!Object.entries(usage).every(([field, value]) => value === undefined ||
+    (field === "cost" ? Number.isFinite(value) : Number.isSafeInteger(value)))) {
     return "Usage total exceeds numeric range; expand for per-agent totals.";
   }
   const parts: string[] = [];
@@ -253,7 +254,7 @@ function isConsumedMessage(value: unknown): value is Message {
       const finiteNonnegative = (number: unknown) => typeof number === "number" && Number.isFinite(number) && number >= 0;
       if (!isRecord(usage) || !isRecord(usage.cost)) return false;
       for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"]) {
-        if (!finiteNonnegative(usage[field])) return false;
+        if (!finiteNonnegative(usage[field]) || !Number.isSafeInteger(usage[field])) return false;
       }
       for (const field of ["input", "output", "cacheRead", "cacheWrite", "total"]) {
         if (!finiteNonnegative(usage.cost[field])) return false;
@@ -614,14 +615,14 @@ async function runSingleAgent(
 
         if (!isRecord(event)) return;
         if (event.type !== "message_end" && event.type !== "tool_result_end") return;
-        if (!isConsumedMessage(event.message)) {
+        if (!isConsumedMessage(event.message) ||
+          (event.type === "tool_result_end" && event.message.role !== "toolResult")) {
           failProtocol("Agent protocol contains a malformed message.");
           return;
         }
         const message = event.message;
 
         if (event.type === "message_end") {
-          retainMessage(message);
           if (message.role === "assistant") {
             const usage = message.usage;
             const nextUsage: UsageStats = {
@@ -633,7 +634,8 @@ async function runSingleAgent(
               cost: currentResult.usage.cost + (usage?.cost.total ?? 0),
               contextTokens: usage?.totalTokens ?? currentResult.usage.contextTokens,
             };
-            if (!Object.values(nextUsage).every(Number.isFinite)) {
+            if (!Object.entries(nextUsage).every(([field, value]) =>
+              field === "cost" ? Number.isFinite(value) : Number.isSafeInteger(value))) {
               failProtocol("Agent usage aggregate overflow; retry with a shorter task.");
               return;
             }
@@ -652,6 +654,7 @@ async function runSingleAgent(
             currentResult.stopReason = message.stopReason;
             if (message.errorMessage) currentResult.errorMessage = message.errorMessage;
           }
+          retainMessage(message);
           emitUpdate();
         }
 
