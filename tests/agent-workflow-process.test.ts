@@ -3,22 +3,34 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import extension from "../extensions/agent_workflow/index.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+/** Whether this environment refuses signals to a live, owned process group (a sandbox). */
+async function ownedGroupSignalsDenied(): Promise<boolean> {
+  const probe = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { detached: true, stdio: "ignore" });
+  probe.unref(); // Exits on its own after five seconds even if a sandbox denies the kill.
+  await new Promise(resolve => setTimeout(resolve, 200));
+  try {
+    process.kill(-probe.pid!, 0);
+    return false;
+  } catch (error) {
+    return (error as { code?: string }).code === "EPERM";
+  } finally {
+    try { process.kill(probe.pid!, "SIGKILL"); } catch { /* Already gone. */ }
+  }
+}
+
 test("registered tool retires a real redirected descendant after a successful answer", { skip: process.platform === "win32" }, async (t) => {
+  if (await ownedGroupSignalsDenied()) {
+    // The tool cannot retire the descendant here; nothing below is meaningful.
+    t.skip("Sandbox denies signals to a live owned process group");
+    return;
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-process-"));
   const sentinel = path.join(dir, "late-write");
   const pidFile = path.join(dir, "pid");
-  const kill = process.kill.bind(process);
-  const denials: string[] = [];
-  t.mock.method(process, "kill", (...args: Parameters<typeof process.kill>) => {
-    try { return kill(...args); }
-    catch (error) {
-      if ((error as { code?: string }).code === "EPERM") denials.push(String(args[1]));
-      throw error;
-    }
-  });
   const oldPath = process.env.PATH;
   process.env.PATH = `${dir}${path.delimiter}${oldPath}`;
   t.after(() => {
@@ -46,12 +58,8 @@ const timer = setInterval(() => {
   });
   await new Promise(resolve => setTimeout(resolve, 1700));
   assert.equal(fs.existsSync(sentinel), false, "descendant must not write after tool settlement");
-  if (denials.length) {
-    assert.equal(result.isError, true);
-    assert.match(JSON.stringify(result), /cleanup could not be confirmed/);
-    t.skip(`Sandbox denies owned process-group signals/probes: ${denials.join(", ")}`);
-    return;
-  }
+  // macOS may answer EPERM transiently while only zombies of the group remain;
+  // that must not fail a successful run.
   assert.equal(result.isError, undefined, JSON.stringify(result));
   assert.match(result.content[0].text, /complete/);
 });

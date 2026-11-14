@@ -616,14 +616,21 @@ async function runSingleAgent(
           process.kill(-proc.pid, groupSignal);
           return true;
         } catch (error) {
-          if ((error as { code?: string }).code === "ESRCH") return false;
-          cleanupFailed = true;
-          warnOnce("Unable to signal the owned agent process group.");
+          const code = (error as { code?: string }).code;
+          if (code === "ESRCH") return false;
+          // macOS answers EPERM while only not-yet-reaped zombies of the group
+          // remain, so EPERM alone is no failure: the bounded confirmation after
+          // SIGKILL decides, and an EPERM that persists there still fails closed.
+          if (code !== "EPERM") {
+            cleanupFailed = true;
+            warnOnce("Unable to signal the owned agent process group.");
+          }
           return true; // Still attempt bounded escalation when the group may exist.
         }
       };
       const cleanup = () => {
         if (killTimer) clearTimeout(killTimer);
+        if (reprobeTimer) clearTimeout(reprobeTimer);
         signal?.removeEventListener("abort", killProc);
       };
       const finish = (code: number) => {
@@ -644,12 +651,47 @@ async function runSingleAgent(
               killTimer = setTimeout(confirm, 100);
               return;
             }
-            if (signalGroup(0)) cleanupFailed = true;
+            if (signalGroup(0)) {
+              cleanupFailed = true;
+              warnOnce("Unable to signal the owned agent process group.");
+            }
             killTimer = undefined;
             if (closed) finish(closedCode);
           };
           confirm();
         }, 5000);
+      };
+      // After exit/close: "gone", "alive", or "denied" (EPERM, which macOS also
+      // answers while only not-yet-reaped zombies of the group remain).
+      const probeGroup = (): "gone" | "alive" | "denied" => {
+        if (!proc.pid || proc.pid === process.pid) return "gone";
+        try {
+          process.kill(-proc.pid, 0);
+          return "alive";
+        } catch (error) {
+          const code = (error as { code?: string }).code;
+          if (code === "ESRCH") return "gone";
+          if (code === "EPERM") return "denied";
+          cleanupFailed = true;
+          warnOnce("Unable to signal the owned agent process group.");
+          return "alive";
+        }
+      };
+      // Re-probe a denied group briefly before escalating: zombies are reaped
+      // within milliseconds, so a successful run is not delayed by the five-second
+      // grace. A group that stays denied gets the normal escalation and, if the
+      // denial persists through confirmation, fails closed.
+      let deniedChecks = 10;
+      let reprobeTimer: ReturnType<typeof setTimeout> | undefined;
+      const retireAfterExit = (onGone: () => void) => {
+        if (settled || reprobeTimer) return;
+        const state = probeGroup();
+        if (state === "gone") { onGone(); return; }
+        if (state === "denied" && !killTimer && deniedChecks-- > 0) {
+          reprobeTimer = setTimeout(() => { reprobeTimer = undefined; retireAfterExit(onGone); }, 50);
+          return;
+        }
+        terminate();
       };
 
       const killProc = () => {
@@ -766,7 +808,7 @@ async function runSingleAgent(
       });
 
       // exit can precede close when descendants inherited the output pipes.
-      proc.on("exit", () => { if (signalGroup(0)) terminate(); });
+      proc.on("exit", () => { retireAfterExit(() => { if (closed) finish(closedCode); }); });
       proc.on("close", (code, closeSignal) => {
         closed = true;
         let start = 0;
@@ -795,8 +837,7 @@ async function runSingleAgent(
         }
         closedCode = protocolError || signal?.reason === PROGRESS_FAILURE || closeSignal ? 1 : (code ?? 1);
         // close can precede descendant exit when descendants redirected their pipes.
-        if (signalGroup(0)) { terminate(); return; }
-        finish(closedCode);
+        retireAfterExit(() => finish(closedCode));
       });
 
       proc.on("error", (error) => {

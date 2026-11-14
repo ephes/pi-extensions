@@ -975,6 +975,59 @@ test("group signal errors retain the protocol diagnostic", async (t) => {
   assert.ok(result.details.results[0].warnings.includes("Unable to signal the owned agent process group."));
 });
 
+function answer() {
+  return JSON.stringify({ type: "message_end", message: {
+    role: "assistant", content: [{ type: "text", text: "complete" }], stopReason: "stop",
+  } }) + "\n";
+}
+
+test("a transient EPERM after a successful exit (macOS zombies) is no failure and no escalation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  let denials = 1;
+  const signals: string[] = [];
+  t.mock.method(process, "kill", (_pid: number, signal: Parameters<typeof process.kill>[1] = "SIGTERM") => {
+    signals.push(String(signal));
+    if (denials-- > 0) throw Object.assign(new Error("zombies only"), { code: "EPERM" });
+    throw Object.assign(new Error("group gone"), { code: "ESRCH" });
+  });
+  const run = execute();
+  children[0].stdout.emit("data", answer());
+  children[0].emit("exit", 0, null);
+  children[0].emit("close", 0, null);
+  t.mock.timers.tick(50);
+  const result = await run;
+  assert.equal(result.isError, undefined, JSON.stringify(result));
+  assert.equal(result.details.results[0].errorMessage, undefined);
+  assert.deepEqual(result.details.results[0].warnings, []);
+  assert.deepEqual(signals, ["0", "0"]);
+});
+
+test("an EPERM that persists after a successful exit fails closed after the confirmation window", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  const signals: string[] = [];
+  t.mock.method(process, "kill", (_pid: number, signal: Parameters<typeof process.kill>[1] = "SIGTERM") => {
+    signals.push(String(signal));
+    throw Object.assign(new Error("denied"), { code: "EPERM" });
+  });
+  let settled = false;
+  const run = execute().then((result) => { settled = true; return result; });
+  children[0].stdout.emit("data", answer());
+  children[0].emit("close", 0, null);
+  for (let check = 0; check < 10; check++) t.mock.timers.tick(50);
+  assert.ok(signals.includes("SIGTERM"), "a persistently denied group is escalated");
+  t.mock.timers.tick(5000);
+  assert.ok(signals.includes("SIGKILL"));
+  await Promise.resolve();
+  assert.equal(settled, false, "confirmation window still open");
+  for (let check = 0; check < 11; check++) t.mock.timers.tick(100);
+  const result = await run;
+  assert.equal(result.isError, true);
+  assert.match(result.details.results[0].errorMessage!, /cleanup could not be confirmed/);
+  assert.match(result.content[0].text ?? "", /complete|cleanup/);
+});
+
 for (const mode of ["single", "chain", "parallel"] as const) {
   for (const eof of [false, true]) {
     test(`throwing progress observer cleans ${mode} groups and prompts (EOF=${eof})`, async (t) => {

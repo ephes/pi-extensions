@@ -8,7 +8,7 @@
 - Refuse duplicate decoded JSON member names in every agent protocol line before consumed-message validation; bound parser depth/container work through the public JSON visitor.
 - Share parallel history/task/stderr retention budgets, retain all task outcomes and independent answers within a shared 1 MiB output allowance, and disclose answer/metadata omissions.
 
-- Admit task input before preparation (1 MiB per task, 4 MiB per workflow including system prompts/labels); retire owned descendants on successful exit as well as failures, retaining answers and reporting unconfirmed cleanup.
+- Admit task input before preparation (1 MiB per task, 4 MiB per workflow including system prompts/labels); retire owned descendants on successful exit as well as failures, retaining answers and reporting unconfirmed cleanup. A transient EPERM from macOS while only zombies of the group remain no longer fails a successful run; a persistent EPERM still does.
 
 - Require nonnegative safe-integer token counts and exact aggregate counts before retaining assistant messages; keep fractional finite costs and provider metadata, and diagnose unsafe display totals across agents.
 
