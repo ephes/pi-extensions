@@ -6,6 +6,7 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { EventEmitter } from "node:events";
 import extension from "../extensions/agent_workflow/index.js";
+import { discoverBundledAgents } from "../extensions/agent_workflow/agents.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 function setup(t: TestContext) {
@@ -60,7 +61,10 @@ function setup(t: TestContext) {
   const executeChain = (chain: Array<{ agent: string; task: string }>, update?: (result: StubResult) => void) => tool.execute("test", { chain }, undefined, update, {
     cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
   });
-  return { children, execute, executeChain, render, tasks, spawnOptions, spawnArgs };
+  const executeParams = (params: unknown) => tool.execute("test", params, undefined, undefined, {
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+  });
+  return { children, execute, executeChain, executeParams, render, tasks, spawnOptions, spawnArgs };
 }
 
 test("abort escalates an unclosed child despite killed=true and waits for close", async (t) => {
@@ -963,11 +967,65 @@ test("group signal errors retain the protocol diagnostic", async (t) => {
   children[0].stdout.emit("data", Buffer.from([0xff]));
   children[0].emit("close", 1, null);
   t.mock.timers.tick(5000);
+  for (let check = 0; check < 11; check++) t.mock.timers.tick(100);
   // Model the bounded escalation without relying on platform signal delivery.
   // The final warning must supplement, rather than replace, the root cause.
   const result = await run;
   assert.match(result.details.results[0].errorMessage!, /invalid UTF-8/);
   assert.ok(result.details.results[0].warnings.includes("Unable to signal the owned agent process group."));
+});
+
+function answer() {
+  return JSON.stringify({ type: "message_end", message: {
+    role: "assistant", content: [{ type: "text", text: "complete" }], stopReason: "stop",
+  } }) + "\n";
+}
+
+test("a transient EPERM after a successful exit (macOS zombies) is no failure and no escalation", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  let denials = 1;
+  const signals: string[] = [];
+  t.mock.method(process, "kill", (_pid: number, signal: Parameters<typeof process.kill>[1] = "SIGTERM") => {
+    signals.push(String(signal));
+    if (denials-- > 0) throw Object.assign(new Error("zombies only"), { code: "EPERM" });
+    throw Object.assign(new Error("group gone"), { code: "ESRCH" });
+  });
+  const run = execute();
+  children[0].stdout.emit("data", answer());
+  children[0].emit("exit", 0, null);
+  children[0].emit("close", 0, null);
+  t.mock.timers.tick(50);
+  const result = await run;
+  assert.equal(result.isError, undefined, JSON.stringify(result));
+  assert.equal(result.details.results[0].errorMessage, undefined);
+  assert.deepEqual(result.details.results[0].warnings, []);
+  assert.deepEqual(signals, ["0", "0"]);
+});
+
+test("an EPERM that persists after a successful exit fails closed after the confirmation window", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  const signals: string[] = [];
+  t.mock.method(process, "kill", (_pid: number, signal: Parameters<typeof process.kill>[1] = "SIGTERM") => {
+    signals.push(String(signal));
+    throw Object.assign(new Error("denied"), { code: "EPERM" });
+  });
+  let settled = false;
+  const run = execute().then((result) => { settled = true; return result; });
+  children[0].stdout.emit("data", answer());
+  children[0].emit("close", 0, null);
+  for (let check = 0; check < 10; check++) t.mock.timers.tick(50);
+  assert.ok(signals.includes("SIGTERM"), "a persistently denied group is escalated");
+  t.mock.timers.tick(5000);
+  assert.ok(signals.includes("SIGKILL"));
+  await Promise.resolve();
+  assert.equal(settled, false, "confirmation window still open");
+  for (let check = 0; check < 11; check++) t.mock.timers.tick(100);
+  const result = await run;
+  assert.equal(result.isError, true);
+  assert.match(result.details.results[0].errorMessage!, /cleanup could not be confirmed/);
+  assert.match(result.content[0].text ?? "", /complete|cleanup/);
 });
 
 for (const mode of ["single", "chain", "parallel"] as const) {
@@ -1113,7 +1171,7 @@ for (const mode of ["single", "chain", "parallel"] as const) {
     const result = await run;
     assert.equal(result.isError, undefined);
     assert.equal(result.details.results[0].usage.turns, 270);
-    assert.equal(result.details.results[0].messages.length, mode === "chain" ? 255 : 256);
+    assert.equal(result.details.results[0].messages.length, mode === "parallel" ? 249 : mode === "chain" ? 255 : 256);
     assert.deepEqual(snapshots.map(snapshot => JSON.stringify(snapshot)), originals);
     assert.ok(result.details.results.every(item => item.exitCode === 0));
   });
@@ -1247,7 +1305,7 @@ for (const eof of [false, true]) {
     const result = await run;
     assert.equal(result.isError, true);
     assert.deepEqual(result.details.results[0].messages, []);
-    assert.match(JSON.stringify(result), /malformed message/);
+    assert.match(JSON.stringify(result), /malformed message|invalid JSON/);
     assert.equal(removed, true);
     assert.deepEqual(child.signals, eof ? [] : ["SIGTERM"]);
     assert.doesNotThrow(() => { render(result, true); });
@@ -1387,3 +1445,157 @@ for (const failure of ["cancel", "spawn"]) {
     assert.equal(fs.existsSync(path.dirname(taskPath)), false);
   });
 }
+
+for (const mode of ["single", "parallel", "chain"] as const) {
+  test(`task UTF-8 input admission precedes preparation (${mode})`, async (t) => {
+    const { children, executeParams } = setup(t);
+    const mkdir = t.mock.method(fs, "mkdtempSync");
+    syncBuiltinESMExports();
+    const task = mode === "single" ? "é".repeat(524289) : "é".repeat(300000);
+    const params = mode === "single" ? { agent: "implementer", task } : {
+      [mode === "parallel" ? "tasks" : "chain"]: Array.from({ length: 8 }, () => ({ agent: "implementer", task })),
+    };
+    const run = executeParams(params);
+    // Let the old implementation finish so the red run cannot hang.
+    for (let start = 0; start < children.length; start += 4) {
+      for (const child of children.slice(start, start + 4)) child.emit("close", 1, null);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const result = await run;
+    assert.equal(mkdir.mock.callCount(), 0);
+    assert.equal(children.length, 0);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text!, /input.*byte limit/i);
+    assert.ok(JSON.stringify(result).length < 2048);
+  });
+}
+
+test("task byte boundary preserves literal multibyte text", async (t) => {
+  const { children, executeParams, tasks } = setup(t);
+  const task = "é".repeat(524288);
+  const run = executeParams({ agent: "implementer", task });
+  assert.equal(tasks[0], `Task: ${task}`);
+  children[0].stdout.emit("data", messageLine("answer"));
+  children[0].emit("close", 0, null);
+  assert.equal((await run).isError, undefined);
+});
+
+test("successful close retires a redirected descendant before resolving", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  const run = execute();
+  children[0].retainGroup = true;
+  children[0].stdout.emit("data", messageLine("completed answer"));
+  children[0].emit("close", 0, null);
+  assert.deepEqual(children[0].signals, ["SIGTERM"]);
+  t.mock.timers.tick(5000);
+  const result = await run;
+  assert.equal(children[0].groupAlive, false);
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text!, /completed answer/);
+});
+
+for (const duplicate of [
+  '"type":"agent_end","type":"message_end"',
+  '"type":"message_end","type":"agent_end"',
+  '"type":"message_end","ty\\u0070e":"message_end"',
+]) {
+  test(`duplicate event members fail closed: ${duplicate}`, async (t) => {
+    const { children, execute } = setup(t);
+    const run = execute();
+    children[0].stdout.emit("data", `{${duplicate},"message":{"role":"assistant","content":[{"type":"text","text":"private answer"}],"stopReason":"stop"}}\n`);
+    children[0].emit("close", 0, null);
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.deepEqual(children[0].signals, ["SIGTERM"]);
+    assert.match(JSON.stringify(result), /invalid JSON/);
+    assert.doesNotMatch(JSON.stringify(result), /private answer/);
+  });
+}
+for (const member of [
+  '"role":"user","role":"assistant"', '"role":"assistant","role":"user"',
+  '"role":"assistant","ro\\u006ce":"assistant"',
+  '"role":"assistant","stopReason":"error","stopReason":"stop"',
+  '"role":"assistant","stopReason":"stop","stopReason":"error"',
+  '"role":"assistant","extra":{"x":0,"x":0}',
+]) {
+  test(`duplicate nested members fail after a completed answer: ${member}`, async (t) => {
+    const { children, execute } = setup(t);
+    const run = execute();
+    children[0].stdout.emit("data", messageLine("first answer"));
+    children[0].stdout.emit("data", `{"type":"message_end","message":{${member},"content":[{"type":"text","text":"private answer"}]}}\n`);
+    children[0].emit("close", 0, null);
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result), /invalid JSON/);
+    assert.doesNotMatch(JSON.stringify(result), /private answer/);
+  });
+}
+
+test("parallel final details share history and answer budgets with all outcomes", async (t) => {
+  const { children, execute, render } = setup(t);
+  const snapshots: unknown[] = [];
+  const run = execute(undefined, false, "", true, partial => { snapshots.push(partial); });
+  for (let index = 0; index < 8; index++) {
+    const child = children[index];
+    for (let turn = 0; turn < 6; turn++) {
+      const event = JSON.parse(messageLine(`${index}-${turn}:` + "x".repeat(700000)).toString());
+      if (turn === 5) event.message.model = "observed-" + "m".repeat(30000);
+      child.stdout.emit("data", JSON.stringify(event) + "\n");
+    }
+    child.stderr.emit("data", Buffer.from("é".repeat(50000)));
+    child.emit("close", 0, null);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  const result = await run;
+  const records = result.details.results;
+  assert.equal(result.isError, undefined);
+  assert.equal(records.length, 8);
+  assert.ok(records.every(item => item.exitCode === 0 && item.stopReason === "stop" && item.usage.turns === 6));
+  assert.ok(records.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item.messages)), 0) <= 4 * 1024 * 1024);
+  assert.ok(Buffer.byteLength(JSON.stringify(result.details)) < 6 * 1024 * 1024);
+  assert.deepEqual(snapshots.at(-1), result);
+  const retained = records as Array<typeof records[number] & { output: string; omitted: { outputChars: number; metadataChars: number } }>;
+  assert.ok(retained.every(item => item.omitted.outputChars > 0 && item.omitted.metadataChars > 0));
+  assert.ok(retained.reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item.output)), 0) <= 1024 * 1024);
+  assert.ok(records.reduce((sum, item) => sum + Buffer.byteLength(item.stderr), 0) <= 64 * 1024);
+  assert.ok(records.some(item => item.warnings.some(warning => /Parallel result details truncated/.test(warning))));
+  // Every answer remains available as a bounded prefix, including when its history was evicted.
+  const rendered = render(result, true);
+  for (let index = 0; index < 8; index++) assert.match(rendered, new RegExp(`${index}-5:`));
+});
+
+test("system prompts count toward the total input budget before any task starts", async (t) => {
+  const { children, executeParams } = setup(t);
+  const result = await executeParams({ tasks: Array.from({ length: 8 }, () => ({ agent: "implementer", task: "x".repeat(512 * 1024) })) });
+  assert.equal(result.isError, true);
+  assert.equal(children.length, 0);
+  assert.match(result.content[0].text!, /input exceeds byte limit/);
+});
+
+test("successful direct-child exit starts retirement before inherited pipes close", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { children, execute } = setup(t);
+  const run = execute();
+  children[0].stdout.emit("data", messageLine("completed answer"));
+  children[0].emit("exit", 0, null);
+  assert.deepEqual(children[0].signals, ["SIGTERM"]);
+  children[0].emit("close", 0, null);
+  assert.equal((await run).isError, undefined);
+});
+
+test("workflow total byte boundary including system prompts is admitted literally", async (t) => {
+  const { children, executeParams, tasks } = setup(t);
+  const agent = discoverBundledAgents().agents.find(item => item.name === "implementer")!;
+  const availableBytes = 4 * 1024 * 1024 - 8 * (Buffer.byteLength(agent.systemPrompt) + Buffer.byteLength(agent.name));
+  const submitted = Array.from({ length: 8 }, (_, index) => ({ agent: agent.name,
+    task: "x".repeat(Math.floor(availableBytes / 8) + (index < availableBytes % 8 ? 1 : 0)) }));
+  const run = executeParams({ tasks: submitted });
+  for (let index = 0; index < 8; index++) {
+    assert.equal(tasks[index], `Task: ${submitted[index].task}`);
+    children[index].stdout.emit("data", messageLine("complete"));
+    children[index].emit("close", 0, null);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  assert.equal((await run).isError, undefined);
+});

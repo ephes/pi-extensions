@@ -13,6 +13,12 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Strict structural Kagi JSON admission and fatal UTF-8 agent-definition decoding.
+
+- [x] Refuse ambiguous agent events and bound completed parallel details/answers across the workflow.
+
+- [x] Preflight workflow input bytes and retire owned descendants after normal completion.
+
 - [x] Admit exact safe-integer token counts, check aggregate count bounds and keep fractional monetary costs compatible.
 
 - [x] Bind consumed event types to permitted message roles before retention/accounting and stop contradictory tool-result handoffs.
