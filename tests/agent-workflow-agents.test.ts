@@ -223,8 +223,10 @@ test("wide discovery refuses the entire generation after 256 directory entries",
     fs.writeFileSync(path.join(fixtureDir, `${i}.txt`), "");
   }
   const read = t.mock.method(fs, "readSync", fs.readSync);
+  const entries = t.mock.method(fs.Dir.prototype, "readSync", fs.Dir.prototype.readSync);
   syncBuiltinESMExports();
   const discovery = discoverBundledAgents();
+  assert.equal(entries.mock.callCount(), 257, "iteration stops at the first excess entry");
   assert.deepEqual(discovery.agents, []);
   assert.deepEqual(discovery.diagnostics, ["Bundled agent discovery refused: limit exceeded (256 entries; 4 MiB total definition bytes)."]);
   assert.equal(read.mock.callCount(), 0);

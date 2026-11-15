@@ -46,13 +46,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isNavigableResultUrl(value: string): boolean {
+  // Require an absolute authority form, independent of a navigation base URL.
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 function validateResponse(value: unknown): KagiSearchResponse {
   const invalid = () => new Error("Kagi API response has invalid search data.");
   if (!isRecord(value) || !Array.isArray(value.data)) throw invalid();
   for (const item of value.data) {
     if (!isRecord(item)) throw invalid();
     if (item.t === 0) {
-      if (typeof item.url !== "string" || typeof item.title !== "string" ||
+      if (typeof item.url !== "string" || !isNavigableResultUrl(item.url) || typeof item.title !== "string" ||
           (item.snippet != null && typeof item.snippet !== "string") ||
           (item.published != null && typeof item.published !== "string" &&
             !(typeof item.published === "number" && Number.isFinite(item.published)))) throw invalid();

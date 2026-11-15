@@ -57,6 +57,8 @@ npm run check
 ## Conventions
 
 - Keep tool names accurate and non-misleading.
+- Kagi result URLs must be absolute HTTP(S) without userinfo; reject invalid response evidence with fixed diagnostics before output retention.
+- Workflow process journeys must use an invented local `pi`, IPC barriers and synthetic prompts; never invoke subscription-backed delegates or providers. Check chain handoff ordering, literal bounded text and prompt/group cleanup on success and abort. Report sandbox signal-policy skips explicitly.
 - Put reusable network/auth/parsing logic in `shared/`.
 - Keep bundled agent prompts in `agents/` and workflow templates in `prompts/`.
 - Add tests for security-sensitive helpers, parsing logic, and agent workflow behavior when practical.

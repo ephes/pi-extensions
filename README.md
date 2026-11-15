@@ -113,6 +113,12 @@ Search and web result displays mark failed calls as failures with bounded diagno
 Successful response JSON must have unique decoded member names throughout (including optional extension fields), at most 64 container levels and 16,384 total objects/arrays. Duplicate keys (including escaped aliases), structural overflow, comments, trailing commas and malformed JSON yield one fixed safe parsing diagnostic before results are returned or rendered. Valid optional extension fields remain available within this envelope.
 
 The response must contain a `data` array of result items (`t: 0`, string `url` and `title`, optional string `snippet` and string or finite numeric `published`) or related-search items (`t: 1`, string-only `list`). Optional result and metadata scalars may also be `null` for absent values. Optional metadata must be an object with string `id`/`node` and finite numeric `ms`/`api_balance` when supplied. The shared `searchKagi` helper retains unknown extra fields after validation; the tool projects bounded metadata as described above. Unsupported item types and malformed fields fail with a controlled error.
+Result URLs must use an absolute `http://` or `https://` authority form, parse
+with WHATWG URL, and have no username or password. One invalid URL refuses the
+whole response before any actionable results are retained, including when that
+row would exceed the output count or length limits. Diagnostics never echo the
+rejected URL. Valid URL spellings (including Unicode hosts and query/fragment
+identity) are preserved; validation does not fetch result destinations.
 
 ## Development
 
@@ -140,6 +146,14 @@ The test suite packs and extracts the npm publish layout, then uses Pi’s publi
 resource loader with the lockfile-installed development peers to check unique
 tool registration and bundled agent/prompt discovery offline. Negative fixtures
 verify that missing entry points, helpers, agents, and prompts fail the smoke check.
+Real-process workflow tests use only an invented local `pi` executable and IPC
+file barriers, with no provider or network calls. Two-step journeys inspect the
+private prompt handoff, including literal dollar syntax and repeated-placeholder
+budgets, and require previous-group retirement before the next launch. Success
+and second-step cancellation both remove prompt files/directories and retire
+children and redirected descendants; a delayed post-settlement write probe must
+remain absent. Environments denying signals to owned groups explicitly skip
+these process tests; report that blocked gate instead of treating it as passed.
 
 Equivalent npm commands:
 
