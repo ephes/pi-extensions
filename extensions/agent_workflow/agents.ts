@@ -23,18 +23,22 @@ const TOOL_NAMES = new Set(["read", "bash", "powershell", "edit", "write", "grep
 
 const AGENTS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../agents");
 const MAX_DEFINITION_BYTES = 256 * 1024;
+const MAX_DISCOVERY_ENTRIES = 256;
+const MAX_DISCOVERY_BYTES = 4 * 1024 * 1024;
+class DiscoveryLimitError extends Error {}
 
-function readDefinition(filePath: string): string {
+function readDefinition(filePath: string, remainingBytes: number, charge: (bytes: number) => void): string {
   // Follow intentional links, but never block opening a FIFO swapped into place.
   const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_DEFINITION_BYTES) throw new Error("Invalid definition file.");
-    const bytes = Buffer.alloc(MAX_DEFINITION_BYTES + 1);
+    const bytes = Buffer.alloc(Math.min(MAX_DEFINITION_BYTES, remainingBytes) + 1);
     let used = 0;
     while (used < bytes.length) {
       const read = fs.readSync(fd, bytes, used, bytes.length - used, null);
       if (read === 0) return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, used));
+      charge(read);
       used += read;
       if (used > MAX_DEFINITION_BYTES) break;
     }
@@ -52,53 +56,66 @@ export function discoverBundledAgents(): AgentDiscoveryResult {
     return { agents, agentsDir: AGENTS_DIR, diagnostics };
   }
 
-  let entries: fs.Dirent[] = [];
+  let definitionBytes = 0;
   try {
-    entries = fs.readdirSync(AGENTS_DIR, { withFileTypes: true });
-  } catch {
-    return { agents, agentsDir: AGENTS_DIR, diagnostics };
-  }
-
-  for (const entry of entries) {
-    if (!entry.name.endsWith(".md")) continue;
-    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-
-    const filePath = path.join(AGENTS_DIR, entry.name);
+    const directory = fs.opendirSync(AGENTS_DIR);
     try {
-      const content = readDefinition(filePath);
-      const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
-      if (
-        typeof frontmatter.name !== "string" || !frontmatter.name.trim() ||
-        typeof frontmatter.description !== "string" || !frontmatter.description.trim() ||
-        (frontmatter.tools !== undefined && typeof frontmatter.tools !== "string") ||
-        (frontmatter.model !== undefined && typeof frontmatter.model !== "string")
-      ) {
-        diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
-        continue;
+      let entries = 0;
+      let entry: fs.Dirent | null;
+      while ((entry = directory.readSync()) !== null) {
+        if (++entries > MAX_DISCOVERY_ENTRIES) throw new DiscoveryLimitError();
+        if (!entry.name.endsWith(".md")) continue;
+        if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+
+        const filePath = path.join(AGENTS_DIR, entry.name);
+        try {
+          const content = readDefinition(filePath, MAX_DISCOVERY_BYTES - definitionBytes, (bytes) => {
+            definitionBytes += bytes;
+            if (definitionBytes > MAX_DISCOVERY_BYTES) throw new DiscoveryLimitError();
+          });
+          const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+          if (
+            typeof frontmatter.name !== "string" || !frontmatter.name.trim() ||
+            typeof frontmatter.description !== "string" || !frontmatter.description.trim() ||
+            (frontmatter.tools !== undefined && typeof frontmatter.tools !== "string") ||
+            (frontmatter.model !== undefined && typeof frontmatter.model !== "string")
+          ) {
+            diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
+            continue;
+          }
+
+          const tools = (frontmatter.tools as string | undefined)
+            ?.split(",")
+            .map((tool) => tool.trim())
+            .filter(Boolean);
+
+          if (tools && (tools.length === 0 || tools.some((tool) => !TOOL_NAMES.has(tool)))) {
+            diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
+            continue;
+          }
+
+          agents.push({
+            name: frontmatter.name,
+            description: frontmatter.description,
+            tools,
+            model: frontmatter.model as string | undefined,
+            systemPrompt: body.trim(),
+            filePath,
+          });
+        } catch (error) {
+          if (error instanceof DiscoveryLimitError) throw error;
+          // Do not expose parser errors, file paths, or definition contents.
+          diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
+        }
       }
-
-      const tools = (frontmatter.tools as string | undefined)
-        ?.split(",")
-        .map((tool) => tool.trim())
-        .filter(Boolean);
-
-      if (tools && (tools.length === 0 || tools.some((tool) => !TOOL_NAMES.has(tool)))) {
-        diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
-        continue;
-      }
-
-      agents.push({
-        name: frontmatter.name,
-        description: frontmatter.description,
-        tools,
-        model: frontmatter.model as string | undefined,
-        systemPrompt: body.trim(),
-        filePath,
-      });
-    } catch {
-      // Do not expose parser errors, file paths, or definition contents.
-      diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
+    } finally {
+      directory.closeSync();
     }
+  } catch (error) {
+    // Never publish an arbitrary partial allowlist or a partial set of warnings.
+    return { agents: [], agentsDir: AGENTS_DIR, diagnostics: [error instanceof DiscoveryLimitError
+      ? "Bundled agent discovery refused: limit exceeded (256 entries; 4 MiB total definition bytes)."
+      : "Bundled agent discovery failed: unable to read definitions directory."] };
   }
 
   const counts = new Map<string, number>();

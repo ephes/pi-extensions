@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Refuse chains above 32 steps before prompt creation or process launch, preserving ordered execution and bounded literal handoffs at the limit.
+- Iterate bundled definitions with the public directory API; refuse the entire discovery above 256 entries or 4 MiB actual reads with one safe diagnostic and descriptor cleanup.
+
 - Admit Kagi JSON with unique decoded keys, at most 64 container levels and 16,384 containers before projection, preserving valid extension fields and using one safe parsing diagnostic.
 - Decode bounded agent-definition bytes with fatal UTF-8 validation, isolating invalid files through existing filename-only diagnostics.
 

@@ -18,6 +18,7 @@ const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const MAX_MESSAGES = 256;
 const MAX_PARALLEL_TASKS = 8;
+const MAX_CHAIN_STEPS = 32;
 const MAX_CONCURRENCY = 4;
 const MAX_TASK_INPUT_BYTES = 1024 * 1024;
 const MAX_WORKFLOW_INPUT_BYTES = 4 * 1024 * 1024;
@@ -897,7 +898,7 @@ const AgentWorkflowParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the bundled agent to invoke (single mode)." })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)." })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution." })),
-  chain: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for sequential execution. Use {previous} to insert prior output." })),
+  chain: Type.Optional(Type.Array(TaskItem, { maxItems: MAX_CHAIN_STEPS, description: "Up to 32 sequential {agent, task} steps. Use {previous} to insert prior output." })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent workflow process (single mode)." })),
   mode: Type.Optional(StringEnum(["single", "parallel", "chain"] as const, { description: "Optional explicit mode for readability." })),
 });
@@ -970,6 +971,11 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
             details: makeDetails("single")([]),
           };
+        }
+
+        if (hasChain && params.chain!.length > MAX_CHAIN_STEPS) {
+          return { isError: true, content: toolContent("Agent workflow exceeds the limit of 32 chain steps."),
+            details: makeDetails("chain")([]) };
         }
 
         // Admit the complete submitted workflow before creating any prompt files.

@@ -161,6 +161,35 @@ function messageLine(text: string) {
   } }) + "\n");
 }
 
+test("chain cardinality is refused before prompt creation or launch", async (t) => {
+  const { children, executeChain } = setup(t);
+  const temporary = t.mock.method(fs, "mkdtempSync", fs.mkdtempSync);
+  syncBuiltinESMExports();
+  const run = executeChain(Array.from({ length: 33 }, () => ({ agent: "implementer", task: "tiny" })));
+  // Settle the old implementation too, so a red run cleans its prompt files.
+  children[0]?.emit("close", 1, null);
+  const result = await run;
+  assert.equal(children.length, 0);
+  assert.equal(temporary.mock.callCount(), 0);
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result), /32.*steps|steps.*32/);
+});
+
+test("boundary-sized chain executes all 32 steps in input order", async (t) => {
+  const { children, tasks, executeChain } = setup(t);
+  const run = executeChain(Array.from({ length: 32 }, (_, i) => ({ agent: "implementer", task: `step-${i}: {previous}` })));
+  for (let i = 0; i < 32; i++) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(tasks[i], `Task: step-${i}: ${i ? `answer-${i - 1}` : ""}`);
+    children[i].stdout.emit("data", messageLine(`answer-${i}`));
+    children[i].emit("close", 0, null);
+  }
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.equal(result.details.results.length, 32);
+  assert.equal(result.content[0].text, "answer-31");
+});
+
 for (const corruption of ["private-secret NOT JSON\n", '{"type":"private-secret"']) {
   test(`malformed JSON after a completed answer fails closed (newline=${corruption.endsWith("\n")})`, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
