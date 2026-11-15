@@ -36,7 +36,7 @@ test("searchKagi validates envelopes, items and optional fields", async (t) => {
     ...["id", "node", "ms", "api_balance"].map(key => ({ data: [], meta: { [key]: [] } }))]) {
     await assert.rejects(searchKagi("query"), /invalid search data/);
   }
-  payload = { data: [{ t: 0, url: "u", title: "t", snippet: null, published: null }],
+  payload = { data: [{ t: 0, url: "https://example.com/", title: "t", snippet: null, published: null }],
     meta: { id: null, node: null, ms: null, api_balance: null } };
   assert.deepEqual(await searchKagi("query"), payload);
   payload = valid;
@@ -253,7 +253,7 @@ test("registered search bounds aggregate URL retention and query labels", async 
 });
 
 test("registered search reports when every result URL is too large", async (t) => {
-  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ t: 0, url: "u".repeat(2049), title: "Title" }] }));
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [{ t: 0, url: `https://example.com/${"u".repeat(2049)}`, title: "Title" }] }));
   const result = await registeredSearch().execute("test", { query: "query" }, undefined, undefined);
   assert.equal(result.details.resultCount, 0);
   assert.deepEqual(result.details.urls, []);
@@ -334,4 +334,32 @@ test("Kagi admits multibyte optional extensions at structural boundaries", async
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
   body = '{"data":[],"extra":[' + Array.from({ length: 16381 }, () => '{}').join(',') + ']}';
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
+});
+
+for (const url of [
+  "javascript:alert('private-url')", "data:text/plain,private-url", "file:///private-url", "ftp://example.com/private-url",
+  "/private-url", "//example.com/private-url", "https:example.com/private-url", "not a private-url", "https://", "https://[invalid/private-url",
+  "https://private-user:private-password@example.com/", "https://private-user@example.com/", "https://:private-password@example.com/",
+]) {
+  test(`Kagi refuses non-navigable or credential-bearing result ${url.split(":")[0]}`, async (t) => {
+    let requests = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      requests++;
+      return Response.json({ data: [valid.data[0], { t: 0, url, title: "synthetic" }] });
+    });
+    for (const run of [() => searchKagi("synthetic"), () => registeredSearch().execute("test", { query: "synthetic" }, undefined, undefined)]) {
+      await assert.rejects(run, { message: "Kagi API response has invalid search data." });
+    }
+    assert.equal(requests, 2, "only the stubbed API is requested; no result is fetched");
+  });
+}
+
+test("Kagi preserves navigable HTTP(S) Unicode hosts and query identity", async (t) => {
+  const urls = ["https://bücher.example/Grüße?q=a%26b&x=%24%26#Kapitel", "http://example.com:8080/a?b=1", "HTTPS://EXAMPLE.COM/path"];
+  const payload = { data: urls.map(url => ({ t: 0, url, title: "synthetic" })) };
+  t.mock.method(globalThis, "fetch", async () => Response.json(payload));
+  assert.deepEqual(await searchKagi("synthetic"), payload);
+  const result = await registeredSearch().execute("test", { query: "synthetic" }, undefined, undefined);
+  assert.deepEqual(result.details.urls, urls);
+  for (const url of urls) assert.ok(result.content[0].text.includes(url));
 });

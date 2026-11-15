@@ -57,6 +57,8 @@ npm run check
 ## Conventions
 
 - Keep tool names accurate and non-misleading.
+- Kagi result URLs must be absolute HTTP(S) without userinfo; reject invalid response evidence with fixed diagnostics before output retention.
+- Workflow process journeys must use an invented local `pi`, IPC barriers and synthetic prompts; never invoke subscription-backed delegates or providers. Check chain handoff ordering, literal bounded text and prompt/group cleanup on success and abort. Report sandbox signal-policy skips explicitly.
 - Put reusable network/auth/parsing logic in `shared/`.
 - Keep bundled agent prompts in `agents/` and workflow templates in `prompts/`.
 - Add tests for security-sensitive helpers, parsing logic, and agent workflow behavior when practical.
@@ -68,5 +70,6 @@ npm run check
 
 - `web_content` is security-sensitive. Preserve redirect validation, private-IP blocking, and fetch-size limits when changing it.
 - `agent_workflow` depends on bundled files in `agents/` and `prompts/`; keep package manifest entries and runtime discovery aligned.
+- Preserve workflow admission before prompt creation/launch: 32 chain steps, 1 MiB per task and 4 MiB submitted input. Discovery must fail the entire generation above 256 entries or 4 MiB actual definition reads and close all descriptors.
 - Keep agent workflow chain handoffs concise; oversized `{previous}` context should be truncated or summarized rather than passed through verbatim.
 - Prefer small, composable extensions with shared helpers rather than duplicating logic across entry points.

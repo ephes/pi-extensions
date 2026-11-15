@@ -62,7 +62,14 @@ added while reading. Symlinks to regular files remain supported, including
 targets outside `agents/`; directories, devices and FIFOs are refused through
 the opened descriptor. Opening uses nonblocking mode so a FIFO target cannot
 stall discovery. Each invalid file gets the same filename-only warning and does
-not hide other valid agents.
+not hide other valid agents within an admitted discovery generation.
+Discovery iterates with Node's public directory API and admits at most 256
+entries (including unrelated files/directories) and 4 MiB of actual definition
+reads in total, including invalid definitions. At most one extra byte is read
+to detect aggregate overflow. Both ceilings are inclusive. Overflow or an
+iterator error discards every agent and per-file warning from that generation
+and returns one fixed diagnostic; no partial allowlist can launch a delegate.
+File and directory descriptors close on success and refusal.
 
 Bundled agent frontmatter prefers these model IDs:
 
@@ -106,6 +113,12 @@ Search and web result displays mark failed calls as failures with bounded diagno
 Successful response JSON must have unique decoded member names throughout (including optional extension fields), at most 64 container levels and 16,384 total objects/arrays. Duplicate keys (including escaped aliases), structural overflow, comments, trailing commas and malformed JSON yield one fixed safe parsing diagnostic before results are returned or rendered. Valid optional extension fields remain available within this envelope.
 
 The response must contain a `data` array of result items (`t: 0`, string `url` and `title`, optional string `snippet` and string or finite numeric `published`) or related-search items (`t: 1`, string-only `list`). Optional result and metadata scalars may also be `null` for absent values. Optional metadata must be an object with string `id`/`node` and finite numeric `ms`/`api_balance` when supplied. The shared `searchKagi` helper retains unknown extra fields after validation; the tool projects bounded metadata as described above. Unsupported item types and malformed fields fail with a controlled error.
+Result URLs must use an absolute `http://` or `https://` authority form, parse
+with WHATWG URL, and have no username or password. One invalid URL refuses the
+whole response before any actionable results are retained, including when that
+row would exceed the output count or length limits. Diagnostics never echo the
+rejected URL. Valid URL spellings (including Unicode hosts and query/fragment
+identity) are preserved; validation does not fetch result destinations.
 
 ## Development
 
@@ -133,6 +146,14 @@ The test suite packs and extracts the npm publish layout, then uses Pi’s publi
 resource loader with the lockfile-installed development peers to check unique
 tool registration and bundled agent/prompt discovery offline. Negative fixtures
 verify that missing entry points, helpers, agents, and prompts fail the smoke check.
+Real-process workflow tests use only an invented local `pi` executable and IPC
+file barriers, with no provider or network calls. Two-step journeys inspect the
+private prompt handoff, including literal dollar syntax and repeated-placeholder
+budgets, and require previous-group retirement before the next launch. Success
+and second-step cancellation both remove prompt files/directories and retire
+children and redirected descendants; a delayed post-settlement write probe must
+remain absent. Environments denying signals to owned groups explicitly skip
+these process tests; report that blocked gate instead of treating it as passed.
 
 Equivalent npm commands:
 
@@ -186,9 +207,9 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - Each web dispatcher is destroyed through Undici's public API after its hop. Cleanup waits at most 100 ms, or stops waiting immediately on cancellation. Cleanup throws, rejections and stalls preserve the primary fetch result or sanitized failure; late rejections are observed without logging private transport errors.
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
-- Submitted workflows admit at most 1 MiB of UTF-8 task text per task and 4 MiB total before any prompt files or children are created. The total includes each invocation’s system prompt, agent label and working-directory label. Chain handoff text has its separate allowance below; it does not consume the submitted-input budget. Rejected workflows return a fixed diagnostic without echoing inputs.
+- Chain workflows admit at most 32 steps before prompt preparation or process launch; excess steps return an error verdict. Submitted workflows admit at most 1 MiB of UTF-8 task text per task and 4 MiB total before any prompt files or children are created. The total includes each invocation’s system prompt, agent label and working-directory label. Chain handoff text has its separate allowance below; it does not consume the submitted-input budget. Rejected workflows return a fixed diagnostic without echoing inputs.
 - Chain mode shares a 12,000 UTF-16 code-unit handoff allowance across all `{previous}` occurrences in each prepared prompt, including truncation notices. Each placeholder receives the same bounded literal prior output, including dollar syntax and any `{previous}` text in that output; inserted text is not expanded again. Caller-authored task text is outside this handoff allowance. If a complete truncation notice cannot fit, each placeholder receives a plain output prefix (or empty text when its allowance is zero); step `handoff` metadata records source/inserted characters and whether context was truncated.
-- Across the whole chain, bulk details retain the most recent messages within 4 MiB of serialized message bytes / 256 messages, 12,000 task-text code units and 64 KiB of stderr. The final progress snapshot uses these same budgets. Earlier steps keep their verdicts, usage and provenance; `omitted` counts removed messages, task characters and stderr bytes, with a result-detail truncation warning that can apply to the current step as well as earlier steps. Task-detail clipping does not change the prompt executed by the child. Each step still has an outcome record, so small outcome metadata grows with step count. The latest step's answer and the next handoff are preserved independently of older detail eviction. These budgets do not limit the number of executed steps.
+- Across the whole chain, bulk details retain the most recent messages within 4 MiB of serialized message bytes / 256 messages, 12,000 task-text code units and 64 KiB of stderr. The final progress snapshot uses these same budgets. Earlier steps keep their verdicts, usage and provenance; `omitted` counts removed messages, task characters and stderr bytes, with a result-detail truncation warning that can apply to the current step as well as earlier steps. Task-detail clipping does not change the prompt executed by the child. Each step still has an outcome record, so small outcome metadata grows with step count. The latest step's answer and the next handoff are preserved independently of older detail eviction. The separate 32-step admission ceiling bounds executed steps and outcome metadata.
 - Parallel completed results share the chain’s 4 MiB / 256-message, 12,000-task-character and 64 KiB stderr detail limits, retaining one ordered outcome per task. Each task also retains an independent `output` answer within an equal share of a 1 MiB serialized-JSON output budget across the batch, so history eviction does not erase answers. Answers exceeding their share keep a Unicode-safe prefix and truncation notice; `omitted.outputChars` records removed source characters. Scalar provenance/agent labels are capped at 512 characters, error messages at 2,048, and at most eight 512-character warnings are retained before adding omission notices; `omitted.metadataChars` records clipped metadata. Ordinary small answers remain complete. The final callback and expanded display use these retained answers.
 - Parallel cancellation stops claiming queued tasks; unstarted tasks create no prompt files or children and appear as aborted in the complete, ordered summary. Already-cancelled single and chain runs fail before prompt creation.
 - Agent-workflow progress callbacks receive detached snapshots. The first intermediate update is immediate; subsequent events coalesce at a 100-ms cadence across the workflow. Child close and parallel completion flush immediately so observer failures still reach the owning supervisor. Intermediate snapshots are marked as previews and stay below 512 KiB of serialized JSON: at most eight recent result records, a 2,048-code-unit assistant-text preview per record, 512-code-unit scalar strings (including task/stderr), three 256-code-unit warnings plus a preview notice, and four 256-code-unit discovery diagnostics. Preview selection examines at most eight recent messages and sixteen blocks per assistant; arbitrary message/tool/provider metadata and full history are omitted before cloning. Each record retains usage, verdict and bounded provenance. The final callback flushes the complete returned result once, with the normal retention budgets and exact final answer; it bypasses the preview limits. Single/chain cancellation still rejects after reaping, and parallel cancellation flushes its full ordered result. Timers are cleared on every exit. Observers may retain, mutate or freeze snapshots; later updates and final results keep their own containers.

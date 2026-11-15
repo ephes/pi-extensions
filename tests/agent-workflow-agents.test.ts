@@ -38,6 +38,13 @@ function fixtureDiscovery(t: import("node:test").TestContext, definitions: Recor
   t.mock.method(fs, "readdirSync", (directory: string, options: unknown) => directory === agentsDir
     ? originalReaddir(fixtureDir, options as never)
     : originalReaddir(directory, options as never));
+  const directories: fs.Dir[] = [];
+  const originalOpendir = fs.opendirSync;
+  t.mock.method(fs, "opendirSync", (directory: string) => {
+    const handle = originalOpendir(directory === agentsDir ? fixtureDir : directory);
+    directories.push(handle);
+    return handle;
+  });
   const originalOpen = fs.openSync;
   t.mock.method(fs, "openSync", (file: string, flags: number) => originalOpen(
     path.dirname(file) === agentsDir ? path.join(fixtureDir, path.basename(file)) : file, flags,
@@ -54,7 +61,7 @@ function fixtureDiscovery(t: import("node:test").TestContext, definitions: Recor
     try { assert.equal(warn.mock.callCount(), 0, "discovery must not write to stderr"); }
     finally { t.mock.restoreAll(); syncBuiltinESMExports(); fs.rmSync(fixtureDir, { recursive: true, force: true }); }
   });
-  return { agentsDir, fixtureDir };
+  return { agentsDir, fixtureDir, directories };
 }
 
 function definition(fields: string) {
@@ -173,8 +180,9 @@ test("symlink to FIFO is refused without blocking discovery", (t) => {
     import { discoverBundledAgents } from ${JSON.stringify(moduleUrl)};
     const root = discoverBundledAgents().agentsDir;
     const fixture = ${JSON.stringify(fixtureDir)};
-    const readdir = fs.readdirSync, open = fs.openSync, read = fs.readFileSync;
+    const readdir = fs.readdirSync, opendir = fs.opendirSync, open = fs.openSync, read = fs.readFileSync;
     fs.readdirSync = (dir, opts) => readdir(dir === root ? fixture : dir, opts);
+    fs.opendirSync = (dir, opts) => opendir(dir === root ? fixture : dir, opts);
     const mapped = file => typeof file === 'string' && file.startsWith(root + '/') ? fixture + file.slice(root.length) : file;
     fs.openSync = (file, ...args) => open(mapped(file), ...args);
     fs.readFileSync = (file, ...args) => read(mapped(file), ...args);
@@ -207,3 +215,79 @@ for (const location of ["frontmatter", "body"] as const) {
   });
 }
 }
+
+test("wide discovery refuses the entire generation after 256 directory entries", (t) => {
+  const { fixtureDir, directories } = fixtureDiscovery(t, {});
+  for (let i = 0; i < 257; i++) {
+    // Even unrelated entries must consume the enumeration allowance.
+    fs.writeFileSync(path.join(fixtureDir, `${i}.txt`), "");
+  }
+  const read = t.mock.method(fs, "readSync", fs.readSync);
+  const entries = t.mock.method(fs.Dir.prototype, "readSync", fs.Dir.prototype.readSync);
+  syncBuiltinESMExports();
+  const discovery = discoverBundledAgents();
+  assert.equal(entries.mock.callCount(), 257, "iteration stops at the first excess entry");
+  assert.deepEqual(discovery.agents, []);
+  assert.deepEqual(discovery.diagnostics, ["Bundled agent discovery refused: limit exceeded (256 entries; 4 MiB total definition bytes)."]);
+  assert.equal(read.mock.callCount(), 0);
+  assert.equal(directories.length, 1);
+  assert.throws(() => directories[0].readSync(), { code: "ERR_DIR_CLOSED" });
+});
+
+test("256 small definitions are admitted and directory descriptors close on success", (t) => {
+  const { directories } = fixtureDiscovery(t, Object.fromEntries(Array.from({ length: 256 }, (_, i) =>
+    [`${i}.md`, definition(`name: agent-${i}\ndescription: synthetic`)])));
+  const discovery = discoverBundledAgents();
+  assert.equal(discovery.agents.length, 256);
+  assert.deepEqual(discovery.diagnostics, []);
+  assert.equal(directories.length, 1);
+  assert.throws(() => directories[0].readSync(), { code: "ERR_DIR_CLOSED" });
+});
+
+for (const valid of [true, false]) {
+  test(`aggregate actual-byte admission bounds ${valid ? "valid" : "invalid"} definitions and closes all handles`, (t) => {
+    const files = Object.fromEntries(Array.from({ length: 18 }, (_, i) => {
+      const text = valid ? definition(`name: agent-${i}\ndescription: synthetic`) : "invalid definition";
+      return [`${i}.md`, text.padEnd(256 * 1024, "x")];
+    }));
+    const { directories } = fixtureDiscovery(t, files);
+    // Pin actual reads rather than relying on stat sizes.
+    const stat = fs.fstatSync;
+    t.mock.method(fs, "fstatSync", (fd: number) => Object.assign(stat(fd), { size: 1 }));
+    const read = t.mock.method(fs, "readSync", fs.readSync);
+    const open = t.mock.method(fs, "openSync", fs.openSync);
+    const close = t.mock.method(fs, "closeSync", fs.closeSync);
+    syncBuiltinESMExports();
+    const discovery = discoverBundledAgents();
+    assert.deepEqual(discovery.agents, []);
+    assert.deepEqual(discovery.diagnostics, ["Bundled agent discovery refused: limit exceeded (256 entries; 4 MiB total definition bytes)."]);
+    assert.ok(read.mock.calls.reduce((sum, call) => sum + Number(call.result ?? 0), 0) <= 4 * 1024 * 1024 + 1);
+    assert.ok(open.mock.callCount() <= 17);
+    assert.equal(close.mock.callCount(), open.mock.callCount());
+    assert.throws(() => directories[0].readSync(), { code: "ERR_DIR_CLOSED" });
+  });
+}
+
+test("exactly 4 MiB of definitions is admitted", (t) => {
+  fixtureDiscovery(t, Object.fromEntries(Array.from({ length: 16 }, (_, i) =>
+    [`${i}.md`, definition(`name: agent-${i}\ndescription: synthetic`).padEnd(256 * 1024, "x")])));
+  const discovery = discoverBundledAgents();
+  assert.equal(discovery.agents.length, 16);
+  assert.deepEqual(discovery.diagnostics, []);
+});
+
+test("directory iterator errors discard partial discovery and close its descriptor", (t) => {
+  const { directories } = fixtureDiscovery(t, { "valid.md": definition("name: valid\ndescription: synthetic") });
+  const read = fs.Dir.prototype.readSync;
+  let calls = 0;
+  t.mock.method(fs.Dir.prototype, "readSync", function(this: fs.Dir) {
+    if (++calls > 1) throw new Error("private directory failure");
+    return read.call(this);
+  });
+  const discovery = discoverBundledAgents();
+  assert.deepEqual(discovery.agents, []);
+  assert.deepEqual(discovery.diagnostics, ["Bundled agent discovery failed: unable to read definitions directory."]);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.throws(() => directories[0].readSync(), { code: "ERR_DIR_CLOSED" });
+});
