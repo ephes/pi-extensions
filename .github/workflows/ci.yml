@@ -5,8 +5,6 @@ name: CI
 # local fixtures; the audit requires the npm registry. No secrets are needed.
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:
