@@ -2,10 +2,15 @@ import { displayText } from "../shared/display.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type KagiApiMeta, formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
+import { type KagiApiMeta, admitKagiQuery, formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, KAGI_QUERY_MAX_BYTES, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
 
 const RESULT_TEXT_MAX_CHARS = 24_000;
 const RELATED_MAX_COUNT = 10;
+
+/** Shorten to at most `max` UTF-16 code units with an ellipsis, never leaving a lone high surrogate. */
+function shorten(text: string, max: number): string {
+  return text.length <= max ? text : text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "") + "…";
+}
 
 export default function kagiSearchExtension(pi: ExtensionAPI) {
   pi.registerTool({
@@ -18,7 +23,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       "When the user needs page text after searching, follow up with web_content on a chosen result URL.",
     ],
     parameters: Type.Object({
-      query: Type.String({ description: "Search query." }),
+      query: Type.String({ description: `Search query (at most ${KAGI_QUERY_MAX_BYTES} UTF-8 bytes before trimming).` }),
       limit: Type.Optional(Type.Number({
         description: `Maximum number of results (${KAGI_LIMIT_MIN}-${KAGI_LIMIT_MAX}, default ${KAGI_LIMIT_DEFAULT}).`,
         minimum: KAGI_LIMIT_MIN,
@@ -27,16 +32,18 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, onUpdate) {
+      admitKagiQuery(params.query);
       const query = params.query.trim();
       if (!query) {
         throw new Error("Query cannot be empty.");
       }
 
       const limit = normalizeKagiLimit(params.limit);
+      const preview = shorten(query, 512);
 
       onUpdate?.({
-        content: [{ type: "text", text: `Searching Kagi for "${query}"...` }],
-        details: { query, limit },
+        content: [{ type: "text", text: `Searching Kagi for "${preview}"...` }],
+        details: { query: preview, limit },
       });
 
       const response = await searchKagi(query, limit, signal);
@@ -46,7 +53,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       const clip = (text: string, max: number) => {
         if (text.length <= max) return text;
         truncated = true;
-        return text.slice(0, max - 1) + "…";
+        return shorten(text, max);
       };
       const retainedQuery = clip(query, 512);
       // Only supported, bounded metadata enters the agent context. The transport
@@ -71,7 +78,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (result.url.length > 2048) { truncated = true; continue; }
         const row = [`${urls.length + 1}. ${clip(result.title, 512)}`, `   URL: ${result.url}`];
         if (result.snippet) row.push(`   Snippet: ${clip(result.snippet, 2048)}`);
-        const published = formatPublishedDate(typeof result.published === "string" ? clip(result.published, 64) : result.published);
+        const published = formatPublishedDate(result.published);
         if (published) row.push(`   Published: ${published}`);
         const text = row.join("\n") + "\n\n";
         if (text.length > remaining) { truncated = true; break; }

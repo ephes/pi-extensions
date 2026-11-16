@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Emit Kagi publication metadata only as validated UTC calendar dates in years 0000–9999; omit malformed, impossible or unsupported dates instead of echoing provider text or slicing extended years.
+
+- Admit Kagi queries up to 8,192 UTF-8 bytes before trimming, progress or URL construction; bound progress query previews to 512 characters while preserving the full admitted search text for requests. Clipped query labels, titles, snippets, related searches and metadata never end in a split surrogate pair.
+
 - Pin the bundled reviewer to authenticated `openai-codex/gpt-6.1-sol` and refuse missing, unapproved or unavailable review models before prompt creation/launch, including whole chains and parallel batches that contain the reviewer; preserve generic implementer fallback.
 
 - Reject agent definitions changed during reading using descriptor generation, consumed length and final named identity, while preserving stable intentional links and discovery budgets.

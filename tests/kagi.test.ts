@@ -8,8 +8,36 @@ test("formatPublishedDate normalizes unix timestamps", () => {
   assert.equal(formatPublishedDate(1735689600), "2025-01-01");
 });
 
-test("formatPublishedDate preserves unparseable strings", () => {
-  assert.equal(formatPublishedDate("not-a-date"), "not-a-date");
+const invalidPublishedDates = [
+  "not-a-date", "2025-02-29", "2024-02-30", "2025-04-31", "2025-00-01", "2025-13-01", "2025-01-00",
+  "2025-01-01T24:00:00Z", "2025-01-01T00:60:00Z", "2025-01-01T00:00:60Z",
+  "2025-01-01T00:00:00+24:00", "2025-01-01T00:00:00+00:60", "2025-02-29T12:00:00Z",
+  "2025-01-01T12:00:00", "January 1, 2025", "1", " 2025-01-01 ", "2025-01-01\n", "2025-01-01\r\n",
+  "+010000-01-01T00:00:00Z", "-000001-01-01T00:00:00Z", "+002025-01-01T00:00:00Z",
+  "9999-12-31T23:30:00-01:00", "0000-01-01T00:30:00+01:00",
+  "2025-01-01" + " ".repeat(54) + "untrusted suffix",
+  253402300800, -62167219201, 8640000000000, -8640000000000,
+];
+
+for (const value of invalidPublishedDates) {
+  test(`formatPublishedDate omits unsupported or invalid evidence ${JSON.stringify(value)}`, () => {
+    assert.equal(formatPublishedDate(value), undefined);
+  });
+}
+
+test("formatPublishedDate validates calendar dates and converts supported timestamps to UTC dates", () => {
+  const cases: Array<[string | number, string]> = [
+    [0, "1970-01-01"], [1735689600.5, "2025-01-01"], [-1, "1969-12-31"],
+    ["2024-02-29", "2024-02-29"], ["2000-02-29", "2000-02-29"],
+    ["2025-01-01T00:00:00Z", "2025-01-01"], ["2025-01-01T00:00:00.123Z", "2025-01-01"],
+    ["2025-01-01T00:30:00.1+01:00", "2024-12-31"], ["2024-12-31T23:30:00-01:00", "2025-01-01"],
+    ["0000-01-01", "0000-01-01"], ["0099-12-31", "0099-12-31"], ["9999-12-31", "9999-12-31"],
+    [-62167219200, "0000-01-01"], [253402300799, "9999-12-31"],
+  ];
+  for (const [value, expected] of cases) assert.equal(formatPublishedDate(value), expected, String(value));
+  for (const value of [NaN, Infinity, -Infinity, Number.MAX_VALUE, "1900-02-29"]) {
+    assert.equal(formatPublishedDate(value), undefined);
+  }
 });
 
 test("formatPublishedDate returns undefined for empty values", () => {
@@ -153,15 +181,70 @@ test("searchKagi and the kagi_search tool send the normalized limit and the shar
   assert.ok(requests.every((request) => request.userAgent === USER_AGENT));
 });
 
-type SearchTool = { execute(id: string, params: unknown, signal: undefined, update: undefined): Promise<{
+type SearchProgress = { content: Array<{ type: "text"; text: string }>; details: { query: string; limit: number } };
+type SearchTool = { execute(id: string, params: unknown, signal: undefined, update: ((progress: SearchProgress) => void) | undefined): Promise<{
   content: Array<{ type: "text"; text: string }>;
-  details: { resultCount: number; relatedCount: number; originalResultCount: number; originalRelatedCount: number; truncated: boolean; urls: string[]; meta?: Record<string, unknown> };
+  details: { query: string; resultCount: number; relatedCount: number; originalResultCount: number; originalRelatedCount: number; truncated: boolean; urls: string[]; meta?: Record<string, unknown> };
 }> };
 function registeredSearch() {
   let tool!: SearchTool;
   kagiSearchExtension({ registerTool(definition: SearchTool) { tool = definition; } } as never);
   return tool;
 }
+
+test("registered search omits untrustworthy Published metadata without losing useful results", async (t) => {
+  const rows = invalidPublishedDates.map((published, index) => ({ t: 0, url: `https://example.com/${index}`, title: `Result ${index}`, published }));
+  let row = rows[0];
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [row] }));
+  for (row of rows) {
+    const result = await registeredSearch().execute("test", { query: "query" }, undefined, undefined);
+    assert.equal(result.details.resultCount, 1);
+    assert.deepEqual(result.details.urls, [row.url]);
+    assert.doesNotMatch(result.content[0].text, /Published:/);
+  }
+});
+
+test("Kagi refuses over-limit UTF-8 queries before progress or transport, including before trimming", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
+  const progress: SearchProgress[] = [];
+  for (const query of ["x".repeat(8193), "é".repeat(4097), "😀".repeat(2048) + "x", " ".repeat(8192) + "q"]) {
+    await assert.rejects(registeredSearch().execute("test", { query }, undefined, update => progress.push(update)),
+      { message: "Kagi query exceeds the 8192-byte UTF-8 limit." });
+    await assert.rejects(searchKagi(query), { message: "Kagi query exceeds the 8192-byte UTF-8 limit." });
+  }
+  assert.equal(progress.length, 0);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("Kagi admits exact-byte boundaries and preserves full query text with bounded progress", async (t) => {
+  const queries: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: URL) => {
+    queries.push(url.searchParams.get("q")!);
+    return Response.json({ data: [] });
+  });
+  for (const query of ["x".repeat(8192), "é".repeat(4096), "😀".repeat(2048)]) {
+    assert.equal(Buffer.byteLength(query), 8192);
+    const progress: SearchProgress[] = [];
+    const result = await registeredSearch().execute("test", { query }, undefined, update => progress.push(update));
+    await searchKagi(query);
+    assert.deepEqual(queries.splice(0), [query, query]);
+    assert.equal(progress.length, 1);
+    assert.ok(progress[0].details.query.length <= 512);
+    assert.ok(progress[0].content[0].text.length <= 550);
+    assert.ok(progress[0].details.query.endsWith("…"));
+    assert.ok(query.startsWith(progress[0].details.query.slice(0, -1)));
+    assert.doesNotMatch(progress[0].details.query, /[\uD800-\uDBFF]…$/);
+    assert.equal(progress[0].content[0].text, `Searching Kagi for "${progress[0].details.query}"...`);
+    assert.equal(result.details.query, progress[0].details.query);
+    assert.doesNotMatch(result.content[0].text, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    assert.ok(result.content[0].text.includes(`"${progress[0].details.query}"`));
+  }
+  const progress: SearchProgress[] = [];
+  await registeredSearch().execute("test", { query: "  Café 東京  " }, undefined, update => progress.push(update));
+  assert.deepEqual(queries, ["Café 東京"]);
+  assert.equal(progress[0].details.query, "Café 東京");
+  await assert.rejects(registeredSearch().execute("test", { query: "  " }, undefined, undefined), /Query cannot be empty/);
+});
 
 test("registered search enforces normalized result counts locally", async (t) => {
   const rows = Array.from({ length: 30 }, (_, i) => ({ t: 0, url: `https://example.com/${i}`, title: `Result ${i}` }));
@@ -199,6 +282,36 @@ test("registered search bounds retained text, related terms and metadata below t
   assert.match(result.content[0].text, /truncated/i);
   assert.doesNotMatch(JSON.stringify(result), /T{513}|S{2049}|P{65}|R{129}|I{257}|N{257}|DROP-ME/);
   assert.deepEqual(Object.keys(result.details.meta!).sort(), ["api_balance", "id", "ms", "node"]);
+});
+
+test("registered search clips astral text at every cap without leaving a lone surrogate", async (t) => {
+  const astral = (codeUnits: number) => "😀".repeat(codeUnits / 2 + 8);
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    data: [
+      { t: 0, url: "https://example.com/a", title: astral(512), snippet: astral(2048) },
+      { t: 1, list: [astral(128)] },
+    ],
+    meta: { id: astral(256), node: astral(256) },
+  }));
+  const result = await registeredSearch().execute("test", { query: astral(512), limit: 1 }, undefined, undefined);
+  const loneHigh = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  const text = result.content[0].text;
+  assert.doesNotMatch(text, loneHigh);
+  assert.doesNotMatch(JSON.stringify(result.details), /\\ud[89ab][0-9a-f]{2}/i);
+  assert.equal(result.details.truncated, true);
+  for (const [prefix, cap] of [["# Kagi search: ", 512], ["1. ", 512], ["   Snippet: ", 2048], ["- ", 128]] as const) {
+    const line = text.split("\n").find(candidate => candidate.startsWith(prefix) && candidate.includes("😀"));
+    assert.ok(line, prefix);
+    const field = line.slice(prefix.length);
+    assert.ok(field.endsWith("…") && field.length <= cap, prefix);
+  }
+  for (const key of ["id", "node"] as const) {
+    const value = result.details.meta![key] as string;
+    assert.doesNotMatch(value, loneHigh);
+    assert.ok(value.endsWith("…") && value.length <= 256, key);
+  }
+  assert.doesNotMatch(result.details.query, loneHigh);
+  assert.ok(result.details.query.length <= 512);
 });
 
 test("registered search preserves complete useful URLs and omits oversized URLs", async (t) => {
@@ -243,7 +356,7 @@ test("registered search keeps ordinary and empty search output with truthful ret
 test("registered search bounds aggregate URL retention and query labels", async (t) => {
   const rows = Array.from({ length: 20 }, (_, i) => ({ t: 0, url: `https://example.com/${i}/${"u".repeat(2000)}`, title: "Title" }));
   t.mock.method(globalThis, "fetch", async () => Response.json({ data: rows }));
-  const result = await registeredSearch().execute("test", { query: "Q".repeat(40000), limit: 20 }, undefined, undefined);
+  const result = await registeredSearch().execute("test", { query: "Q".repeat(8192), limit: 20 }, undefined, undefined);
   assert.ok(result.content[0].text.length < 32768);
   assert.ok(JSON.stringify(result.details).length < 32768);
   assert.ok(result.details.resultCount > 0 && result.details.resultCount < 20);
