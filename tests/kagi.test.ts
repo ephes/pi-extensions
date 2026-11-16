@@ -43,7 +43,7 @@ test("searchKagi validates envelopes, items and optional fields", async (t) => {
   assert.deepEqual(await searchKagi("query"), valid);
 });
 
-test("searchKagi bounds chunked success and error bodies and cancels streams", async (t) => {
+test("searchKagi bounds chunked success bodies, cancels unread error bodies and streams", async (t) => {
   let cancelled = 0;
   let pulls = 0;
   let status = 200;
@@ -52,7 +52,7 @@ test("searchKagi bounds chunked success and error bodies and cancels streams", a
     cancel() { cancelled++; },
   }), { status }));
   for (status of [200, 500]) {
-    await assert.rejects(searchKagi("query"), /byte limit/);
+    await assert.rejects(searchKagi("query"), status === 200 ? /byte limit/ : /HTTP 500; check Kagi service status/);
   }
   assert.equal(cancelled, 2);
   assert.ok(pulls <= 8);
@@ -362,6 +362,26 @@ test("Kagi preserves navigable HTTP(S) Unicode hosts and query identity", async 
   const result = await registeredSearch().execute("test", { query: "synthetic" }, undefined, undefined);
   assert.deepEqual(result.details.urls, urls);
   for (const url of urls) assert.ok(result.content[0].text.includes(url));
+});
+
+test("HTTP error status is reported without reading a stalled or oversized error body", async (t) => {
+  let pulls = 0;
+  let cancelled = 0;
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      if (pulls === 1) controller.enqueue(new Uint8Array(2 * 1024 * 1024));
+      return new Promise(() => {});
+    },
+    cancel() { cancelled += 1; },
+  }, { highWaterMark: 0 }), { status: 503 }));
+  const started = Date.now();
+  await assert.rejects(searchKagi("query"), {
+    message: "Kagi API request failed with HTTP 503; check Kagi service status or API access and retry.",
+  });
+  assert.ok(Date.now() - started < 5_000);
+  assert.equal(pulls, 0);
+  assert.equal(cancelled, 1);
 });
 
 for (const status of [400, 429, 500]) {

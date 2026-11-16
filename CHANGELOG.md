@@ -6,7 +6,7 @@
 - Cancel response bodies delivered by noncooperative fetches after cancellation or deadline, observing cleanup failures while preserving the primary outcome.
 
 - Project external web, Kagi and workflow display text through public Pi TUI safe-text helpers before styling, preserving structured content, visible Unicode, tabs and line breaks.
-- Exclude upstream Kagi HTTP error bodies from diagnostics; retain status and a fixed service/access retry hint.
+- Exclude upstream Kagi HTTP error bodies from diagnostics; cancel them unread and report the status with a fixed service/access retry hint.
 
 - Validate all Kagi result URLs as absolute HTTP(S) without credentials before retention; refuse malformed response evidence without disclosing the URL or fetching destinations.
 - Cover real two-step workflow handoffs with offline IPC process journeys: bounded literal context, previous descendant retirement before launch, and prompt/group cleanup on success and cancellation.
