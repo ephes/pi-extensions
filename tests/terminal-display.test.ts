@@ -63,6 +63,8 @@ test("workflow projects diagnostics, labels, tasks, tool arguments and Markdown 
 
 test("display projection preserves Unicode and newlines before application styles are added", () => {
   assert.equal(displayText("Grüße 東京\n\u001b[31mRot\u001b[0m"), "Grüße 東京\nRot");
+  assert.equal(displayText("```go\nfunc f() {\n\treturn\n}\n```"), "```go\nfunc f() {\n\treturn\n}\n```");
+  assert.equal(displayText("-\ta\n\t-\tb\u0007\u001b[2J"), "-\ta\n\t-\tb ");
   const tool = register(webContent);
   const styledTheme = { fg: (_color: string, text: string) => `\u001b[32m${text}\u001b[0m`, bold: (text: string) => text };
   const output = render(tool.renderResult({ content: [], details: { title: attack } }, { expanded: false, isPartial: false }, styledTheme));
