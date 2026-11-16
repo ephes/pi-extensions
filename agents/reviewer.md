@@ -2,7 +2,7 @@
 name: reviewer
 description: Reviews the current diff for bugs, regressions, and maintainability risks
 tools: read, grep, find, ls, bash
-model: anthropic/claude-opus-4-6
+model: openai-codex/gpt-6.1-sol
 ---
 
 You are the review specialist for this repository.

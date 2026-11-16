@@ -53,16 +53,16 @@ function setup(t: TestContext) {
     ? { chain: [{ agent: "implementer", task: "first" }, { agent: "reviewer", task }] }
     : parallel ? { tasks: Array.from({ length: 8 }, (_, i) => ({ agent: "implementer", task: `task-${i}` })) }
     : { agent: "implementer", task: "test" }, signal, update, {
-      cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+      cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
     } as never);
   const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
   const render = (result: StubResult, expanded: boolean) =>
     tool.renderResult(result, { expanded, isPartial: false }, plainTheme).render(200).map((line) => line.trimEnd()).join("\n");
   const executeChain = (chain: Array<{ agent: string; task: string }>, update?: (result: StubResult) => void) => tool.execute("test", { chain }, undefined, update, {
-    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
   });
   const executeParams = (params: unknown) => tool.execute("test", params, undefined, undefined, {
-    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
   });
   return { children, execute, executeChain, executeParams, render, tasks, spawnOptions, spawnArgs };
 }
@@ -812,7 +812,7 @@ for (const oversized of [false, true]) {
     children[1].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content, stopReason: "stop" } }) + "\n");
     children[1].emit("close", 0, null);
     const result = await run;
-    assert.deepEqual(result.content, [{ type: "text", text: "Warnings:\n- Requested model anthropic/claude-opus-4-6 is unavailable; falling back to openai/gpt-5.4.\n\n" + text }]);
+    assert.deepEqual(result.content, [{ type: "text", text: text }]);
     const notice = `[Previous agent workflow output truncated from ${text.length} to 12000 characters.]\n\n`;
     const capped = oversized ? notice + text.slice(0, 12000 - notice.length) : text;
     assert.equal(tasks[1], `Task: ${capped}`);

@@ -75,12 +75,19 @@ iterator error discards every agent and per-file warning from that generation
 and returns one fixed diagnostic; no partial allowlist can launch a delegate.
 File and directory descriptors close on success and refusal.
 
-Bundled agent frontmatter prefers these model IDs:
+Bundled agent frontmatter uses these model IDs:
 
 - `implementer` — `openai/gpt-5.4`
-- `reviewer` — `anthropic/claude-opus-4-6`
+- `reviewer` — `openai-codex/gpt-6.1-sol` (required)
 
-If an exact bundled model is unavailable, `agent_workflow` now falls back in this order:
+The bundled `reviewer` requires the exact provider-qualified model above in its
+frontmatter and Pi's authenticated model list. Authenticate `openai-codex` via
+`/login` and ensure `gpt-6.1-sol` is available before using `/review` or a chain
+containing the reviewer. Missing, bare or different configured models, and an
+unavailable approved model, fail before review prompt files or children are
+created. The reviewer never falls back to another model or provider.
+
+For the implementer and other agents, an unavailable configured model falls back in this order:
 
 1. the current Pi session model, when it is authenticated
 2. the first authenticated model returned by Pi
@@ -94,7 +101,7 @@ selected model until an observation arrives. Missing observations do not erase
 prior ones. Provider-qualified selections also match their bare model ID. A
 reported mismatch adds one bounded warning; it never changes model selection.
 
-If you want deterministic model pinning instead of fallback behavior, edit the frontmatter in `agents/*.md` to match your environment.
+For agents other than the reviewer, edit the frontmatter in `agents/*.md` to prefer a model available in your environment; their fallback policy still applies.
 
 ## Requirements
 

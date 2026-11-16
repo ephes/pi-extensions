@@ -63,3 +63,18 @@ export function resolveAgentModel(
       : "No authenticated Pi models are configured. Run /login or configure an API key.",
   };
 }
+
+const REVIEWER_MODEL = "openai-codex/gpt-6.1-sol";
+
+export function resolveReviewerModel(
+  requestedModel: string | undefined,
+  availableModels: ModelRef[],
+): ResolvedAgentModel {
+  if (requestedModel !== REVIEWER_MODEL) {
+    return { requestedModel, warning: `Bundled reviewer requires ${REVIEWER_MODEL}; set that exact model in agents/reviewer.md. Review model fallback is disabled.` };
+  }
+  if (!availableModels.some(model => formatModelRef(model) === REVIEWER_MODEL)) {
+    return { requestedModel, warning: `Bundled reviewer requires authenticated ${REVIEWER_MODEL}. Run /login or configure credentials for that provider. Review model fallback is disabled.` };
+  }
+  return { requestedModel, resolvedModel: REVIEWER_MODEL };
+}

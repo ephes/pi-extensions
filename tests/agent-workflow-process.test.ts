@@ -54,7 +54,7 @@ const timer = setInterval(() => {
   let tool: { execute: (...args: unknown[]) => Promise<{ isError?: boolean; content: Array<{ text: string }> }> };
   extension({ registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
   const result = await tool!.execute("real", { agent: "implementer", task: "synthetic" }, undefined, undefined, {
-    cwd: dir, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+    cwd: dir, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
   });
   await new Promise(resolve => setTimeout(resolve, 1700));
   assert.equal(fs.existsSync(sentinel), false, "descendant must not write after tool settlement");
@@ -147,7 +147,7 @@ setTimeout(() => process.exit(2), 15000);
       { agent: "implementer", task: "synthetic first" },
       { agent: "reviewer", task: "before\n{previous}\nbetween\n{previous}\nafter" },
     ] }, controller.signal, undefined, {
-      cwd: dir, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+      cwd: dir, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
     });
     run = pending;
     // Observe failures immediately even while waiting on the IPC barrier.
@@ -158,6 +158,7 @@ setTimeout(() => process.exit(2), 15000);
     fs.writeFileSync(file("release-1"), "go");
     await waitForFile(file("ready-2"));
     const second = record(2);
+    assert.equal(second.args[second.args.indexOf("--model") + 1], "openai-codex/gpt-6.1-sol");
     assert.equal(second.previousRetired, true, "next process must observe retirement of the previous descendant");
     assert.equal(second.previousPromptRemoved, true, "next process starts after previous prompt cleanup");
     const notice = `[Previous agent workflow output truncated from ${answer.length} to 6000 characters.]\n\n`;
@@ -227,7 +228,7 @@ pump();
   let tool!: { execute: (...args: unknown[]) => Promise<{ isError?: boolean; details: { results: Array<{ errorMessage?: string }> } }> };
   extension({ registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
   const pending = tool.execute("flood", { agent: "implementer", task: "synthetic" }, controller.signal, undefined, {
-    cwd: dir, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+    cwd: dir, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
   });
   run = pending;
   const result = await pending;

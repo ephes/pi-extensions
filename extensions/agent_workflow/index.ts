@@ -10,7 +10,7 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseUnambiguousJson } from "../../shared/json.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
-import { resolveAgentModel, type ModelRef } from "./model_resolution.js";
+import { resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
 
 const PROGRESS_FAILURE = new Error("Agent workflow progress delivery failed; retry the task.");
 
@@ -508,14 +508,16 @@ async function runSingleAgent(
     };
   }
 
-  const modelSelection = resolveAgentModel(agent.model, availableModels, currentModel);
+  const modelSelection = agent.name === "reviewer"
+    ? resolveReviewerModel(agent.model, availableModels)
+    : resolveAgentModel(agent.model, availableModels, currentModel);
   if (!modelSelection.resolvedModel) {
     return {
       agent: agent.name,
       task,
       exitCode: 1,
       messages: [],
-      stderr: "No authenticated Pi models are configured. Run /login or configure an API key.",
+      stderr: modelSelection.warning ?? "No authenticated Pi models are configured. Run /login or configure an API key.",
       warnings: modelSelection.warning ? [modelSelection.warning] : [],
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
       requestedModel: agent.model,

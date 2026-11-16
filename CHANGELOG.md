@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pin the bundled reviewer to authenticated `openai-codex/gpt-6.1-sol` and refuse missing, unapproved or unavailable review models before prompt creation/launch; preserve generic implementer fallback.
+
 - Reject agent definitions changed during reading using descriptor generation, consumed length and final named identity, while preserving stable intentional links and discovery budgets.
 
 - Enforce the eight-task parallel ceiling in the schema and before discovery/input preparation; oversized batches return one bounded error and no task results.
