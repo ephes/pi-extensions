@@ -174,9 +174,7 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
     }
     const body = await readBody(response, combined);
     if (!response.ok) {
-      const safeBody = body.trim().split(apiKey).join("[redacted]");
-      const detail = safeBody ? `: ${safeBody.slice(0, 500)}` : "";
-      throw new Error(`Kagi API request failed with HTTP ${response.status}${detail}`);
+      throw new Error(`Kagi API request failed with HTTP ${response.status}; check Kagi service status or API access and retry.`);
     }
     let payload: unknown;
     try { payload = parseUnambiguousJson(body, 64, 16384); }

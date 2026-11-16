@@ -1,3 +1,4 @@
+import { displayText } from "../shared/display.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -107,7 +108,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
     renderCall(args, theme) {
       const query = String(args.query ?? "");
       const shortened = query.length > 60 ? `${query.slice(0, 57)}...` : query;
-      return new Text(theme.fg("toolTitle", theme.bold("kagi_search ")) + theme.fg("accent", shortened), 0, 0);
+      return new Text(theme.fg("toolTitle", theme.bold("kagi_search ")) + theme.fg("accent", displayText(shortened)), 0, 0);
     },
 
     renderResult(result, { expanded, isPartial }, theme) {
@@ -119,19 +120,19 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         const diagnostic = result.content.find((item) => item.type === "text")?.text ?? "";
         const limit = expanded ? 640 : 160;
         const preview = diagnostic.length > limit ? `${diagnostic.slice(0, limit)}...` : diagnostic;
-        return new Text(theme.fg("error", "Kagi search failed") + (preview ? "\n" + theme.fg("dim", preview) : ""), 0, 0);
+        return new Text(theme.fg("error", "Kagi search failed") + (preview ? "\n" + theme.fg("dim", displayText(preview)) : ""), 0, 0);
       }
 
       const details = (result.details ?? {}) as { resultCount?: number; relatedCount?: number };
       const summary = `${details.resultCount ?? 0} results` + ((details.relatedCount ?? 0) > 0 ? `, ${details.relatedCount} related` : "");
 
       if (!expanded) {
-        return new Text(theme.fg("success", summary), 0, 0);
+        return new Text(theme.fg("success", displayText(summary)), 0, 0);
       }
 
       const text = result.content.find((item) => item.type === "text")?.text ?? "";
       const preview = text.length > 320 ? `${text.slice(0, 320)}...` : text;
-      return new Text(theme.fg("success", summary) + "\n" + theme.fg("dim", preview), 0, 0);
+      return new Text(theme.fg("success", displayText(summary)) + "\n" + theme.fg("dim", displayText(preview)), 0, 0);
     },
   });
 }

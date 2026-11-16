@@ -116,14 +116,14 @@ test("searchKagi caller cancellation is immediate and success clears deadline", 
 });
 
 
-test("searchKagi controls invalid JSON and redacts key from HTTP diagnostics", async (t) => {
+test("searchKagi controls invalid JSON and excludes HTTP response bodies", async (t) => {
   let body = "not JSON";
   let status = 200;
   t.mock.method(globalThis, "fetch", async () => new Response(body, { status }));
   await assert.rejects(searchKagi("query"), /not valid JSON/);
   status = 401;
   body = "upstream echoed test-key";
-  await assert.rejects(searchKagi("query"), { message: "Kagi API request failed with HTTP 401: upstream echoed [redacted]" });
+  await assert.rejects(searchKagi("query"), { message: "Kagi API request failed with HTTP 401; check Kagi service status or API access and retry." });
 });
 
 test("normalizeKagiLimit rounds, then clamps to 1-20, defaulting non-finite values", () => {
@@ -296,14 +296,14 @@ for (const phase of ["fetch", "reader"] as const) {
   });
 }
 
-test("malformed UTF-8 HTTP error bodies retain status and redact credentials", async (t) => {
+test("malformed UTF-8 HTTP error bodies retain status without body evidence", async (t) => {
   t.mock.method(globalThis, "fetch", async () => new Response(Buffer.concat([
     Buffer.from("proxy echoed test-key "), Buffer.from([0xff]),
   ]), { status: 502 }));
   await assert.rejects(searchKagi("query"), (error: unknown) => {
     assert.ok(error instanceof Error);
-    assert.match(error.message, /HTTP 502: proxy echoed \[redacted\]/);
-    assert.doesNotMatch(error.stack!, /test-key/);
+    assert.match(error.message, /HTTP 502; check Kagi service status/);
+    assert.doesNotMatch(error.stack!, /test-key|proxy echoed/);
     return true;
   });
 });
@@ -363,3 +363,18 @@ test("Kagi preserves navigable HTTP(S) Unicode hosts and query identity", async 
   assert.deepEqual(result.details.urls, urls);
   for (const url of urls) assert.ok(result.content[0].text.includes(url));
 });
+
+for (const status of [400, 429, 500]) {
+  test(`searchKagi HTTP ${status} diagnostics exclude all upstream evidence`, async (t) => {
+    t.mock.method(globalThis, "fetch", async () => new Response(
+      "private-query-sentinel https://example.test/?signed=private-signature unrelated-token test-key", { status },
+    ));
+    await assert.rejects(searchKagi("synthetic-query"), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, `Kagi API request failed with HTTP ${status}; check Kagi service status or API access and retry.`);
+      assert.doesNotMatch(error.stack! + JSON.stringify(error), /private-query|private-signature|unrelated-token|test-key/);
+      assert.equal(error.cause, undefined);
+      return true;
+    });
+  });
+}

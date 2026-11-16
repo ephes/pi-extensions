@@ -108,7 +108,7 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import http from "node:http";
 import tls from "node:tls";
-import { Agent } from "undici";
+import undici, { Agent, type Response as UndiciResponse } from "undici";
 import { fetchReadablePage } from "../shared/web.js";
 
 async function fixture(t: TestContext, handler: http.RequestListener) {
@@ -626,3 +626,43 @@ test("shared and registered readable output limits use one finite integer policy
     assert.equal(result.details.outputTruncated, true);
   }
 });
+
+for (const cleanup of ["success", "reject", "throw"] as const) {
+  for (const cause of ["caller", "deadline"] as const) {
+    test(`late fetch response body is cancelled once after ${cause}, cleanup ${cleanup} preserves primary error`, async (t) => {
+      t.mock.method(dns, "lookup", async () => approved);
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let deliver!: (response: UndiciResponse) => void;
+      let entered!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      t.mock.method(undici, "fetch", () => {
+        entered();
+        return new Promise<UndiciResponse>(resolve => { deliver = resolve; });
+      });
+      let destroyed = 0;
+      t.mock.method(Agent.prototype, "destroy", () => {
+        destroyed++;
+        return Promise.reject(new Error("private destroy evidence"));
+      });
+      const controller = new AbortController();
+      const reason = new Error("synthetic caller cancellation");
+      const run = fetchReadablePage("https://public.example/", undefined, controller.signal);
+      const rejected = assert.rejects(run, error => cause === "caller" ? error === reason : error instanceof Error && /timed out/.test(error.message));
+      await started;
+      if (cause === "caller") controller.abort(reason);
+      else t.mock.timers.tick(30000);
+      await rejected;
+      assert.equal(destroyed, 1);
+      let cancelled = 0;
+      const body = { cancel() {
+        cancelled++;
+        if (cleanup === "throw") throw new Error("private cancellation evidence");
+        return cleanup === "reject" ? Promise.reject(new Error("private cancellation evidence")) : Promise.resolve();
+      } };
+      deliver({ body } as UndiciResponse);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(cancelled, 1);
+      assert.equal(destroyed, 1);
+    });
+  }
+}
