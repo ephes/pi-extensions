@@ -252,7 +252,7 @@ test("installed reviewer selects only the approved authenticated model", async (
 });
 
 test("installed chain and parallel workflows refuse an unavailable reviewer before any step launches", async (t) => {
-  const { workflow, cwd } = await installedSmoke(t);
+  const { workflow, installed, cwd } = await installedSmoke(t);
   const other = { provider: "openai", id: "gpt-5.4" };
   const spawns = fakeAgents(t, () => {});
   const temporary = t.mock.method(fs, "mkdtempSync", fs.mkdtempSync);
@@ -268,6 +268,14 @@ test("installed chain and parallel workflows refuse an unavailable reviewer befo
     assert.match(JSON.stringify(result.content), /reviewer.*openai-codex\/gpt-6.1-sol/i);
     assert.deepEqual((result.details as { results: unknown[] }).results, []);
   }
+  // A reviewer definition dropped by discovery is refused the same way.
+  fs.rmSync(path.join(installed, "agents/reviewer.md"));
+  const missing = await workflow.definition.execute("missing-reviewer-workflow",
+    { chain: [{ agent: "implementer", task: "synthetic" }, { agent: "reviewer", task: "{previous}" }] }, undefined, undefined, {
+      cwd, model: other, modelRegistry: { getAvailable: () => [other, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
+    } as unknown as ExtensionToolContext);
+  assert.equal(missing.isError, true);
+  assert.match(JSON.stringify(missing.content), /reviewer definition is unavailable/);
   assert.equal(spawns(), 0);
   assert.equal(temporary.mock.callCount(), 0);
 });

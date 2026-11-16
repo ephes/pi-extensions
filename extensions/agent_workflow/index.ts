@@ -1022,8 +1022,10 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         // Refuse an unapproved or unavailable reviewer model before any chain step or
         // parallel task creates prompt files or launches a child.
         const reviewer = agents.find(agent => agent.name === "reviewer");
-        if ((hasChain || hasTasks) && reviewer && submitted.some(item => item.agent === "reviewer")) {
-          const selection = resolveReviewerModel(reviewer.model, availableModels);
+        if ((hasChain || hasTasks) && submitted.some(item => item.agent === "reviewer")) {
+          const selection = reviewer
+            ? resolveReviewerModel(reviewer.model, availableModels)
+            : { warning: "Bundled reviewer definition is unavailable; it must be discoverable and use openai-codex/gpt-6.1-sol." };
           if (!selection.resolvedModel) {
             return { isError: true, content: toolContent(selection.warning ?? "Bundled reviewer model is unavailable."),
               details: makeDetails(hasChain ? "chain" : "parallel")([]) };
