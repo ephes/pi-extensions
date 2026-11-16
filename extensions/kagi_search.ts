@@ -73,7 +73,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (result.url.length > 2048) { truncated = true; continue; }
         const row = [`${urls.length + 1}. ${clip(result.title, 512)}`, `   URL: ${result.url}`];
         if (result.snippet) row.push(`   Snippet: ${clip(result.snippet, 2048)}`);
-        const published = formatPublishedDate(typeof result.published === "string" ? clip(result.published, 64) : result.published);
+        const published = formatPublishedDate(result.published);
         if (published) row.push(`   Published: ${published}`);
         const text = row.join("\n") + "\n\n";
         if (text.length > remaining) { truncated = true; break; }

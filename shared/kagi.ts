@@ -201,18 +201,23 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
 }
 
 export function formatPublishedDate(value: string | number | null | undefined): string | undefined {
-  if (value === undefined || value === null || value === "") {
-    return undefined;
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    // Require a calendar date or an explicit-zone ISO timestamp. Date.parse
+    // alone accepts ambiguous formats and silently normalizes impossible days.
+    if (value.length < 10 || value.length > 29) return undefined;
+    const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-](\d{2}):(\d{2})))?$/.exec(value);
+    if (!match || match[0] !== value) return undefined;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (month < 1 || month > 12 || day < 1 || day > days[month - 1] ||
+        Number(match[4] ?? 0) > 23 || Number(match[5] ?? 0) > 59 || Number(match[6] ?? 0) > 59 ||
+        Number(match[7] ?? 0) > 23 || Number(match[8] ?? 0) > 59) return undefined;
   }
-
-  if (typeof value === "number") {
-    const date = new Date(value * 1000);
-    return Number.isNaN(date.getTime()) ? undefined : date.toISOString().slice(0, 10);
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
+  const date = new Date(typeof value === "number" ? value * 1000 : value);
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() < 0 || date.getUTCFullYear() > 9999) return undefined;
   return date.toISOString().slice(0, 10);
 }

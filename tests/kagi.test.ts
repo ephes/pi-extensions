@@ -8,8 +8,36 @@ test("formatPublishedDate normalizes unix timestamps", () => {
   assert.equal(formatPublishedDate(1735689600), "2025-01-01");
 });
 
-test("formatPublishedDate preserves unparseable strings", () => {
-  assert.equal(formatPublishedDate("not-a-date"), "not-a-date");
+const invalidPublishedDates = [
+  "not-a-date", "2025-02-29", "2024-02-30", "2025-04-31", "2025-00-01", "2025-13-01", "2025-01-00",
+  "2025-01-01T24:00:00Z", "2025-01-01T00:60:00Z", "2025-01-01T00:00:60Z",
+  "2025-01-01T00:00:00+24:00", "2025-01-01T00:00:00+00:60", "2025-02-29T12:00:00Z",
+  "2025-01-01T12:00:00", "January 1, 2025", "1", " 2025-01-01 ", "2025-01-01\n", "2025-01-01\r\n",
+  "+010000-01-01T00:00:00Z", "-000001-01-01T00:00:00Z", "+002025-01-01T00:00:00Z",
+  "9999-12-31T23:30:00-01:00", "0000-01-01T00:30:00+01:00",
+  "2025-01-01" + " ".repeat(54) + "untrusted suffix",
+  253402300800, -62167219201, 8640000000000, -8640000000000,
+];
+
+for (const value of invalidPublishedDates) {
+  test(`formatPublishedDate omits unsupported or invalid evidence ${JSON.stringify(value)}`, () => {
+    assert.equal(formatPublishedDate(value), undefined);
+  });
+}
+
+test("formatPublishedDate validates calendar dates and converts supported timestamps to UTC dates", () => {
+  const cases: Array<[string | number, string]> = [
+    [0, "1970-01-01"], [1735689600.5, "2025-01-01"], [-1, "1969-12-31"],
+    ["2024-02-29", "2024-02-29"], ["2000-02-29", "2000-02-29"],
+    ["2025-01-01T00:00:00Z", "2025-01-01"], ["2025-01-01T00:00:00.123Z", "2025-01-01"],
+    ["2025-01-01T00:30:00.1+01:00", "2024-12-31"], ["2024-12-31T23:30:00-01:00", "2025-01-01"],
+    ["0000-01-01", "0000-01-01"], ["0099-12-31", "0099-12-31"], ["9999-12-31", "9999-12-31"],
+    [-62167219200, "0000-01-01"], [253402300799, "9999-12-31"],
+  ];
+  for (const [value, expected] of cases) assert.equal(formatPublishedDate(value), expected, String(value));
+  for (const value of [NaN, Infinity, -Infinity, Number.MAX_VALUE, "1900-02-29"]) {
+    assert.equal(formatPublishedDate(value), undefined);
+  }
 });
 
 test("formatPublishedDate returns undefined for empty values", () => {
@@ -163,6 +191,18 @@ function registeredSearch() {
   kagiSearchExtension({ registerTool(definition: SearchTool) { tool = definition; } } as never);
   return tool;
 }
+
+test("registered search omits untrustworthy Published metadata without losing useful results", async (t) => {
+  const rows = invalidPublishedDates.map((published, index) => ({ t: 0, url: `https://example.com/${index}`, title: `Result ${index}`, published }));
+  let row = rows[0];
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [row] }));
+  for (row of rows) {
+    const result = await registeredSearch().execute("test", { query: "query" }, undefined, undefined);
+    assert.equal(result.details.resultCount, 1);
+    assert.deepEqual(result.details.urls, [row.url]);
+    assert.doesNotMatch(result.content[0].text, /Published:/);
+  }
+});
 
 test("Kagi refuses over-limit UTF-8 queries before progress or transport, including before trimming", async (t) => {
   const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
