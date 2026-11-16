@@ -184,7 +184,7 @@ test("searchKagi and the kagi_search tool send the normalized limit and the shar
 type SearchProgress = { content: Array<{ type: "text"; text: string }>; details: { query: string; limit: number } };
 type SearchTool = { execute(id: string, params: unknown, signal: undefined, update: ((progress: SearchProgress) => void) | undefined): Promise<{
   content: Array<{ type: "text"; text: string }>;
-  details: { resultCount: number; relatedCount: number; originalResultCount: number; originalRelatedCount: number; truncated: boolean; urls: string[]; meta?: Record<string, unknown> };
+  details: { query: string; resultCount: number; relatedCount: number; originalResultCount: number; originalRelatedCount: number; truncated: boolean; urls: string[]; meta?: Record<string, unknown> };
 }> };
 function registeredSearch() {
   let tool!: SearchTool;
@@ -225,7 +225,7 @@ test("Kagi admits exact-byte boundaries and preserves full query text with bound
   for (const query of ["x".repeat(8192), "é".repeat(4096), "😀".repeat(2048)]) {
     assert.equal(Buffer.byteLength(query), 8192);
     const progress: SearchProgress[] = [];
-    await registeredSearch().execute("test", { query }, undefined, update => progress.push(update));
+    const result = await registeredSearch().execute("test", { query }, undefined, update => progress.push(update));
     await searchKagi(query);
     assert.deepEqual(queries.splice(0), [query, query]);
     assert.equal(progress.length, 1);
@@ -235,6 +235,9 @@ test("Kagi admits exact-byte boundaries and preserves full query text with bound
     assert.ok(query.startsWith(progress[0].details.query.slice(0, -1)));
     assert.doesNotMatch(progress[0].details.query, /[\uD800-\uDBFF]…$/);
     assert.equal(progress[0].content[0].text, `Searching Kagi for "${progress[0].details.query}"...`);
+    assert.equal(result.details.query, progress[0].details.query);
+    assert.doesNotMatch(result.content[0].text, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    assert.ok(result.content[0].text.includes(`"${progress[0].details.query}"`));
   }
   const progress: SearchProgress[] = [];
   await registeredSearch().execute("test", { query: "  Café 東京  " }, undefined, update => progress.push(update));
@@ -279,6 +282,36 @@ test("registered search bounds retained text, related terms and metadata below t
   assert.match(result.content[0].text, /truncated/i);
   assert.doesNotMatch(JSON.stringify(result), /T{513}|S{2049}|P{65}|R{129}|I{257}|N{257}|DROP-ME/);
   assert.deepEqual(Object.keys(result.details.meta!).sort(), ["api_balance", "id", "ms", "node"]);
+});
+
+test("registered search clips astral text at every cap without leaving a lone surrogate", async (t) => {
+  const astral = (codeUnits: number) => "😀".repeat(codeUnits / 2 + 8);
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    data: [
+      { t: 0, url: "https://example.com/a", title: astral(512), snippet: astral(2048) },
+      { t: 1, list: [astral(128)] },
+    ],
+    meta: { id: astral(256), node: astral(256) },
+  }));
+  const result = await registeredSearch().execute("test", { query: astral(512), limit: 1 }, undefined, undefined);
+  const loneHigh = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  const text = result.content[0].text;
+  assert.doesNotMatch(text, loneHigh);
+  assert.doesNotMatch(JSON.stringify(result.details), /\\ud[89ab][0-9a-f]{2}/i);
+  assert.equal(result.details.truncated, true);
+  for (const [prefix, cap] of [["# Kagi search: ", 512], ["1. ", 512], ["   Snippet: ", 2048], ["- ", 128]] as const) {
+    const line = text.split("\n").find(candidate => candidate.startsWith(prefix) && candidate.includes("😀"));
+    assert.ok(line, prefix);
+    const field = line.slice(prefix.length);
+    assert.ok(field.endsWith("…") && field.length <= cap, prefix);
+  }
+  for (const key of ["id", "node"] as const) {
+    const value = result.details.meta![key] as string;
+    assert.doesNotMatch(value, loneHigh);
+    assert.ok(value.endsWith("…") && value.length <= 256, key);
+  }
+  assert.doesNotMatch(result.details.query, loneHigh);
+  assert.ok(result.details.query.length <= 512);
 });
 
 test("registered search preserves complete useful URLs and omits oversized URLs", async (t) => {

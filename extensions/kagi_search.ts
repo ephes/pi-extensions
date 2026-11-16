@@ -7,6 +7,11 @@ import { type KagiApiMeta, admitKagiQuery, formatPublishedDate, KAGI_LIMIT_DEFAU
 const RESULT_TEXT_MAX_CHARS = 24_000;
 const RELATED_MAX_COUNT = 10;
 
+/** Shorten to at most `max` UTF-16 code units with an ellipsis, never leaving a lone high surrogate. */
+function shorten(text: string, max: number): string {
+  return text.length <= max ? text : text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "") + "…";
+}
+
 export default function kagiSearchExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "kagi_search",
@@ -34,7 +39,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       }
 
       const limit = normalizeKagiLimit(params.limit);
-      const preview = query.length > 512 ? query.slice(0, 511).replace(/[\uD800-\uDBFF]$/, "") + "…" : query;
+      const preview = shorten(query, 512);
 
       onUpdate?.({
         content: [{ type: "text", text: `Searching Kagi for "${preview}"...` }],
@@ -48,7 +53,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       const clip = (text: string, max: number) => {
         if (text.length <= max) return text;
         truncated = true;
-        return text.slice(0, max - 1) + "…";
+        return shorten(text, max);
       };
       const retainedQuery = clip(query, 512);
       // Only supported, bounded metadata enters the agent context. The transport
