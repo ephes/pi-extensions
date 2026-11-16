@@ -27,17 +27,30 @@ const MAX_DISCOVERY_ENTRIES = 256;
 const MAX_DISCOVERY_BYTES = 4 * 1024 * 1024;
 class DiscoveryLimitError extends Error {}
 
+function sameGeneration(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
 function readDefinition(filePath: string, remainingBytes: number, charge: (bytes: number) => void): string {
   // Follow intentional links, but never block opening a FIFO swapped into place.
   const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
-    const stat = fs.fstatSync(fd);
+    const stat = fs.fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.size > MAX_DEFINITION_BYTES) throw new Error("Invalid definition file.");
     const bytes = Buffer.alloc(Math.min(MAX_DEFINITION_BYTES, remainingBytes) + 1);
     let used = 0;
     while (used < bytes.length) {
       const read = fs.readSync(fd, bytes, used, bytes.length - used, null);
-      if (read === 0) return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, used));
+      if (read === 0) {
+        const after = fs.fstatSync(fd, { bigint: true });
+        // stat follows intentional links, just like open; a stable linked target is valid.
+        const named = fs.statSync(filePath, { bigint: true });
+        if (BigInt(used) !== stat.size || !sameGeneration(stat, after) || !sameGeneration(after, named)) {
+          throw new Error("Definition changed while reading.");
+        }
+        return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, used));
+      }
       charge(read);
       used += read;
       if (used > MAX_DEFINITION_BYTES) break;

@@ -57,6 +57,10 @@ with filename-only warnings so no ambiguous agent can be invoked. Discovery
 warnings are included in each tool result and its display, without raw stderr
 writes.
 Definition bytes must be valid UTF-8; malformed or incomplete sequences are rejected without replacement decoding, with the same filename-only warning. Valid multibyte names, model IDs and prompts are preserved.
+Definitions are accepted only when consumed length and descriptor identity, size,
+mtime and ctime remain unchanged across the read and a final pathname check
+still resolves to that generation. In-place edits, truncation and replacement
+(including symlink retargeting) are isolated as invalid definitions.
 Definitions must resolve to regular files of at most 256 KiB, including bytes
 added while reading. Symlinks to regular files remain supported, including
 targets outside `agents/`; directories, devices and FIFOs are refused through
