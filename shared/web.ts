@@ -2,7 +2,7 @@ import dns from "node:dns/promises";
 import { decodeHTML } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
-import { Agent, fetch, type Response } from "undici";
+import undici, { Agent, type Response } from "undici";
 import { USER_AGENT } from "./http.js";
 
 export interface ReadablePage {
@@ -69,7 +69,7 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
   while (true) {
     const dispatcher = await createPinnedAgent(currentUrl, signal);
     try {
-      const response = await withAbort(fetch(currentUrl, {
+      const response = await fetchWithAbort(undici.fetch(currentUrl, {
         headers: {
           "User-Agent": USER_AGENT,
           Accept: "text/html,application/xhtml+xml,text/plain",
@@ -358,6 +358,33 @@ async function readResponseTextWithLimit(response: Response, maxBytes: number, s
   }
 
   return { text, truncated };
+}
+
+// Fetch owns any response delivered after cancellation; never leave its body unclaimed.
+function fetchWithAbort(operation: Promise<Response>, signal: AbortSignal): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    let abandoned = false;
+    const abort = () => {
+      abandoned = true;
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    operation.then(response => {
+      signal.removeEventListener("abort", abort);
+      if (abandoned || signal.aborted) {
+        try { void response.body?.cancel().catch(() => {}); }
+        catch { /* Cleanup cannot replace the primary abort or expose response evidence. */ }
+        reject(signal.reason);
+        return;
+      }
+      resolve(response);
+    }, error => {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    });
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 // DNS lookup has no signal API; stop waiting and observe its eventual settlement.

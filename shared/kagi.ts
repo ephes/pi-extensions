@@ -113,7 +113,7 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    try { return new TextDecoder("utf-8", { fatal: response.ok }).decode(bytes); }
+    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { throw new Error("Kagi API response contains invalid UTF-8."); }
   } finally {
     signal.removeEventListener("abort", cancel);
@@ -172,12 +172,12 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
       void response.body?.cancel().catch(() => {});
       combined.throwIfAborted();
     }
-    const body = await readBody(response, combined);
     if (!response.ok) {
-      const safeBody = body.trim().split(apiKey).join("[redacted]");
-      const detail = safeBody ? `: ${safeBody.slice(0, 500)}` : "";
-      throw new Error(`Kagi API request failed with HTTP ${response.status}${detail}`);
+      // Error bodies are never used as evidence; release them without reading.
+      try { void response.body?.cancel().catch(() => {}); } catch { /* locked or disturbed body */ }
+      throw new Error(`Kagi API request failed with HTTP ${response.status}; check Kagi service status or API access and retry.`);
     }
+    const body = await readBody(response, combined);
     let payload: unknown;
     try { payload = parseUnambiguousJson(body, 64, 16384); }
     catch { throw new Error("Kagi API response is not valid JSON."); }

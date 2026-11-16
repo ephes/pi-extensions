@@ -1,3 +1,4 @@
+import { displayText } from "../shared/display.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -63,7 +64,7 @@ export default function webContentExtension(pi: ExtensionAPI) {
     renderCall(args, theme) {
       const url = displayUrl(String(args.url ?? ""));
       const shortened = url.length > 72 ? `${url.slice(0, 69)}...` : url;
-      return new Text(theme.fg("toolTitle", theme.bold("web_content ")) + theme.fg("accent", shortened), 0, 0);
+      return new Text(theme.fg("toolTitle", theme.bold("web_content ")) + theme.fg("accent", displayText(shortened)), 0, 0);
     },
 
     renderResult(result, { expanded, isPartial }, theme) {
@@ -75,7 +76,7 @@ export default function webContentExtension(pi: ExtensionAPI) {
         const diagnostic = result.content.find((item) => item.type === "text")?.text ?? "";
         const limit = expanded ? 640 : 160;
         const preview = diagnostic.length > limit ? `${diagnostic.slice(0, limit)}...` : diagnostic;
-        return new Text(theme.fg("error", "Page fetch failed") + (preview ? "\n" + theme.fg("dim", preview) : ""), 0, 0);
+        return new Text(theme.fg("error", "Page fetch failed") + (preview ? "\n" + theme.fg("dim", displayText(preview)) : ""), 0, 0);
       }
 
       const details = (result.details ?? {}) as { title?: string; truncated?: boolean; charCount?: number };
@@ -86,12 +87,12 @@ export default function webContentExtension(pi: ExtensionAPI) {
       }
 
       if (!expanded) {
-        return new Text(theme.fg("success", summary), 0, 0);
+        return new Text(theme.fg("success", displayText(summary)), 0, 0);
       }
 
       const text = result.content.find((item) => item.type === "text")?.text ?? "";
       const preview = text.length > 320 ? `${text.slice(0, 320)}...` : text;
-      return new Text(theme.fg("success", summary) + "\n" + theme.fg("dim", preview), 0, 0);
+      return new Text(theme.fg("success", displayText(summary)) + "\n" + theme.fg("dim", displayText(preview)), 0, 0);
     },
   });
 }

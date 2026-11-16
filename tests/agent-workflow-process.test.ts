@@ -195,3 +195,45 @@ setTimeout(() => process.exit(2), 15000);
     }
   });
 }
+
+test("real synthetic pi protocol flood is refused and its prompt is removed after retirement", { skip: process.platform === "win32", timeout: 20000 }, async (t) => {
+  if (await ownedGroupSignalsDenied()) {
+    t.skip("Sandbox denies signals to a live owned process group");
+    return;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-flood-process-"));
+  const recordPath = path.join(dir, "record.json");
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${oldPath}`;
+  const controller = new AbortController();
+  let run: Promise<unknown> | undefined;
+  t.after(async () => {
+    controller.abort();
+    await run?.catch(() => {});
+    process.env.PATH = oldPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(dir, "pi"), `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ pid: process.pid, task: process.argv.at(-1).slice(1) }));
+setTimeout(() => process.exit(2), 12000);
+console.log(JSON.stringify({type:'message_end', message:{role:'assistant',content:[{type:'text',text:'synthetic answer'}],stopReason:'stop'}}));
+let count = 0;
+function pump() {
+  while (count++ < 65536) if (!process.stdout.write('{"type":"ignored"}\\n')) { process.stdout.once('drain', pump); return; }
+}
+pump();
+`, { mode: 0o700 });
+  let tool!: { execute: (...args: unknown[]) => Promise<{ isError?: boolean; details: { results: Array<{ errorMessage?: string }> } }> };
+  extension({ registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
+  const pending = tool.execute("flood", { agent: "implementer", task: "synthetic" }, controller.signal, undefined, {
+    cwd: dir, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+  });
+  run = pending;
+  const result = await pending;
+  assert.equal(result.isError, true);
+  assert.match(result.details.results[0].errorMessage!, /total protocol event limit/);
+  const record: { pid: number; task: string } = JSON.parse(fs.readFileSync(recordPath, "utf8"));
+  assert.equal(fs.existsSync(path.dirname(record.task)), false);
+  assert.throws(() => process.kill(record.pid, 0), { code: "ESRCH" });
+});

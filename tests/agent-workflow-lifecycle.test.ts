@@ -1628,3 +1628,70 @@ test("workflow total byte boundary including system prompts is admitted literall
   }
   assert.equal((await run).isError, undefined);
 });
+
+for (const overflow of [false, true]) {
+  test(`total protocol event ceiling ${overflow ? "refuses ignored EOF event after an answer" : "admits exact boundary"}`, async (t) => {
+    const { children, execute } = setup(t);
+    const run = execute();
+    const child = children[0];
+    child.stdout.emit("data", messageLine("completed synthetic answer"));
+    const batch = Buffer.from('{"type":"ignored"}\n'.repeat(1024));
+    for (let i = 0; i < 63; i++) child.stdout.emit("data", batch);
+    child.stdout.emit("data", Buffer.from('{"type":"ignored"}\n'.repeat(1023)));
+    if (overflow) child.stdout.emit("data", '{"type":"ignored"}'); // counted at EOF too
+    child.emit("close", 0, null);
+    const result = await run;
+    assert.equal(Boolean(result.isError), overflow);
+    if (overflow) {
+      assert.match(result.details.results[0].errorMessage!, /total protocol event limit/);
+      assert.deepEqual(child.signals, []); // EOF already closed the direct child/group.
+    }
+  });
+}
+for (const overflow of [false, true]) {
+  test(`total stdout byte ceiling ${overflow ? "retires process and stops chain" : "admits exact boundary including blank lines"}`, async (t) => {
+    const { children, execute, spawnArgs } = setup(t);
+    const run = execute(undefined, overflow);
+    const child = children[0];
+    const answer = messageLine("completed synthetic answer");
+    child.stdout.emit("data", answer);
+    const blank = Buffer.from(" ".repeat(512 * 1024 - 1) + "\n");
+    for (let i = 0; i < 127; i++) child.stdout.emit("data", blank);
+    child.stdout.emit("data", blank.subarray(answer.length));
+    assert.deepEqual(child.signals, []);
+    if (overflow) {
+      child.stdout.emit("data", Buffer.from("\n"));
+      assert.deepEqual(child.signals, ["SIGTERM"]);
+      // Subsequent data must never replace the refusal or restore success.
+      child.stdout.emit("data", messageLine("late answer"));
+    }
+    child.emit("close", 0, null);
+    const result = await run;
+    assert.equal(Boolean(result.isError), overflow);
+    assert.equal(children.length, 1);
+    if (overflow) assert.match(result.details.results[0].errorMessage!, /total protocol byte limit/);
+    assert.equal(fs.existsSync(path.dirname(spawnArgs[0].at(-1)!.slice(1))), false);
+  });
+}
+
+test("total event work counts consumed and ignored events across chunks and cannot recover after refusal", async (t) => {
+  const { children, execute, spawnArgs } = setup(t);
+  const run = execute(undefined, true);
+  const child = children[0];
+  child.stdout.emit("data", messageLine("completed synthetic answer"));
+  for (let i = 0; i < 65535; i++) {
+    const line = i % 2 ? '0\n' : messageLine("small valid answer");
+    child.stdout.emit("data", line);
+  }
+  assert.deepEqual(child.signals, []);
+  child.stdout.emit("data", '{"type":');
+  child.stdout.emit("data", '"ignored"}\n');
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  child.stdout.emit("data", messageLine("late answer"));
+  child.emit("close", 0, null);
+  const result = await run;
+  assert.equal(result.isError, true);
+  assert.match(result.details.results[0].errorMessage!, /total protocol event limit/);
+  assert.equal(children.length, 1);
+  assert.equal(fs.existsSync(path.dirname(spawnArgs[0].at(-1)!.slice(1))), false);
+});

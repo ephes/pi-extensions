@@ -1,3 +1,4 @@
+import { displayText } from "../../shared/display.js";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -14,6 +15,8 @@ import { resolveAgentModel, type ModelRef } from "./model_resolution.js";
 const PROGRESS_FAILURE = new Error("Agent workflow progress delivery failed; retry the task.");
 
 const MAX_PROTOCOL_LINE_BYTES = 1024 * 1024;
+const MAX_PROTOCOL_BYTES = 64 * 1024 * 1024;
+const MAX_PROTOCOL_EVENTS = 65536;
 const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 const MAX_MESSAGES = 256;
@@ -112,7 +115,8 @@ function formatUsageStats(
 
 type DisplayThemeColor = "muted" | "toolOutput" | "accent" | "warning" | "dim";
 
-function formatToolCall(toolName: string, args: Record<string, unknown>, themeFg: (color: DisplayThemeColor, text: string) => string): string {
+function formatToolCall(toolName: string, args: Record<string, unknown>, rawThemeFg: (color: DisplayThemeColor, text: string) => string): string {
+  const themeFg: typeof rawThemeFg = (color, text) => rawThemeFg(color, displayText(text));
   const shortenPath = (value: string) => {
     const home = os.homedir();
     return value.startsWith(home) ? `~${value.slice(home.length)}` : value;
@@ -589,6 +593,8 @@ async function runSingleAgent(
       let protocolError = false;
       let stderrTail = Buffer.alloc(0);
       let lineBytes = 0;
+      let protocolBytes = 0;
+      let protocolEvents = 0;
       let messageBytes = 0;
       const messageSizes: number[] = [];
       const warnOnce = (warning: string) => {
@@ -710,6 +716,10 @@ async function runSingleAgent(
 
       const processLine = (line: string) => {
         if (!line.trim()) return;
+        if (++protocolEvents > MAX_PROTOCOL_EVENTS) {
+          failProtocol("Agent total protocol event limit exceeded (65,536); retry with a shorter task.");
+          return;
+        }
 
         let event: unknown;
         try {
@@ -773,6 +783,11 @@ async function runSingleAgent(
       proc.stdout.on("data", (chunk) => {
         if (protocolError || signal?.reason === PROGRESS_FAILURE) return;
         const bytes: Buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        if (bytes.length > MAX_PROTOCOL_BYTES - protocolBytes) {
+          failProtocol("Agent total protocol byte limit exceeded (64 MiB); retry with a shorter task.");
+          return;
+        }
+        protocolBytes += bytes.length;
         let offset = 0;
         while (offset < bytes.length) {
           const newline = bytes.indexOf(10, offset);
@@ -1187,7 +1202,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         for (const [index, step] of args.chain.slice(0, 3).entries()) {
           const task = typeof step.task === "string" ? step.task.replace(/\{previous\}/g, "").trim() : "";
           const preview = task.length > 40 ? `${task.slice(0, 40)}...` : task;
-          text += `\n  ${theme.fg("muted", `${index + 1}.`)} ${theme.fg("accent", String(step.agent ?? "..."))}${theme.fg("dim", ` ${preview}`)}`;
+          text += `\n  ${theme.fg("muted", `${index + 1}.`)} ${theme.fg("accent", displayText(String(step.agent ?? "...")))}${theme.fg("dim", displayText(` ${preview}`))}`;
         }
         if (args.chain.length > 3) text += `\n  ${theme.fg("muted", `... +${args.chain.length - 3} more`)}`;
         return new Text(text, 0, 0);
@@ -1197,7 +1212,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         let text = theme.fg("toolTitle", theme.bold("agent_workflow ")) + theme.fg("accent", `parallel (${args.tasks.length} tasks)`);
         for (const task of args.tasks.slice(0, 3)) {
           const preview = typeof task.task === "string" && task.task.length > 40 ? `${task.task.slice(0, 40)}...` : String(task.task ?? "...");
-          text += `\n  ${theme.fg("accent", String(task.agent ?? "..."))}${theme.fg("dim", ` ${preview}`)}`;
+          text += `\n  ${theme.fg("accent", displayText(String(task.agent ?? "...")))}${theme.fg("dim", displayText(` ${preview}`))}`;
         }
         if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
         return new Text(text, 0, 0);
@@ -1207,7 +1222,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       const task = String(args.task ?? "...");
       const preview = task.length > 60 ? `${task.slice(0, 60)}...` : task;
       return new Text(
-        theme.fg("toolTitle", theme.bold("agent_workflow ")) + theme.fg("accent", agentName) + `\n  ${theme.fg("dim", preview)}`,
+        theme.fg("toolTitle", theme.bold("agent_workflow ")) + theme.fg("accent", displayText(agentName)) + `\n  ${theme.fg("dim", displayText(preview))}`,
         0,
         0,
       );
@@ -1217,13 +1232,13 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       const details = result.details as AgentWorkflowDetails | undefined;
       if (!details || details.results.length === 0) {
         const first = result.content.find((item) => item.type === "text");
-        return new Text(first?.text ?? "(no output)", 0, 0);
+        return new Text(displayText(first?.text ?? "(no output)"), 0, 0);
       }
 
       const withDiagnostics = (component: Text | Container) => {
         if (!details.diagnostics?.length) return component;
         const container = new Container();
-        container.addChild(new Text(theme.fg("warning", formatWarningsBlock(details.diagnostics)), 0, 0));
+        container.addChild(new Text(theme.fg("warning", displayText(formatWarningsBlock(details.diagnostics))), 0, 0));
         container.addChild(component);
         return container;
       };
@@ -1249,7 +1264,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         for (const item of itemsToShow) {
           if (item.type === "text") {
             const preview = expanded ? item.text : item.text.split("\n").slice(0, 3).join("\n");
-            text += `${theme.fg("toolOutput", preview)}\n`;
+            text += `${theme.fg("toolOutput", displayText(preview))}\n`;
           } else {
             text += `${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}\n`;
           }
@@ -1267,14 +1282,14 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
         if (expanded) {
           const container = new Container();
-          let header = `${icon} ${theme.fg("toolTitle", theme.bold(single.agent))}`;
-          if (isError && single.stopReason) header += ` ${theme.fg("error", `[${single.stopReason}]`)}`;
+          let header = `${icon} ${theme.fg("toolTitle", theme.bold(displayText(single.agent)))}`;
+          if (isError && single.stopReason) header += ` ${theme.fg("error", displayText(`[${single.stopReason}]`))}`;
           container.addChild(new Text(header, 0, 0));
-          if (isError && single.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${single.errorMessage}`), 0, 0));
-          if (single.warnings.length > 0) container.addChild(new Text(theme.fg("warning", formatWarningsBlock(single.warnings)), 0, 0));
+          if (isError && single.errorMessage) container.addChild(new Text(theme.fg("error", displayText(`Error: ${single.errorMessage}`)), 0, 0));
+          if (single.warnings.length > 0) container.addChild(new Text(theme.fg("warning", displayText(formatWarningsBlock(single.warnings))), 0, 0));
           container.addChild(new Spacer(1));
           container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
-          container.addChild(new Text(theme.fg("dim", single.task), 0, 0));
+          container.addChild(new Text(theme.fg("dim", displayText(single.task)), 0, 0));
           container.addChild(new Spacer(1));
           container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
           for (const item of displayItems) {
@@ -1284,26 +1299,26 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           }
           if (finalOutput) {
             container.addChild(new Spacer(1));
-            container.addChild(new Markdown(finalOutput.trim(), 0, 0, markdownTheme));
+            container.addChild(new Markdown(displayText(finalOutput.trim()), 0, 0, markdownTheme));
           }
           const usage = formatUsageStats(single.usage, single.model);
           if (usage) {
             container.addChild(new Spacer(1));
-            container.addChild(new Text(theme.fg("dim", usage), 0, 0));
+            container.addChild(new Text(theme.fg("dim", displayText(usage)), 0, 0));
           }
           return withDiagnostics(container);
         }
 
-        let text = `${icon} ${theme.fg("toolTitle", theme.bold(single.agent))}`;
-        if (single.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(single.warnings))}`;
+        let text = `${icon} ${theme.fg("toolTitle", theme.bold(displayText(single.agent)))}`;
+        if (single.warnings.length > 0) text += `\n${theme.fg("warning", displayText(formatWarningsBlock(single.warnings)))}`;
         if (displayItems.length === 0) {
-          text += `\n${theme.fg("muted", finalOutput || "(no output)")}`;
+          text += `\n${theme.fg("muted", displayText(finalOutput || "(no output)"))}`;
         } else {
           text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
           if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
         }
         const usage = formatUsageStats(single.usage, single.model);
-        if (usage) text += `\n${theme.fg("dim", usage)}`;
+        if (usage) text += `\n${theme.fg("dim", displayText(usage))}`;
         return withDiagnostics(new Text(text, 0, 0));
       }
 
@@ -1321,18 +1336,18 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
             const displayItems = getDisplayItems(entry.messages);
             const finalOutput = getResultOutput(entry);
             container.addChild(new Spacer(1));
-            container.addChild(new Text(`${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", entry.agent)} ${itemIcon}`, 0, 0));
-            container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", entry.task), 0, 0));
-            if (entry.warnings.length > 0) container.addChild(new Text(theme.fg("warning", formatWarningsBlock(entry.warnings)), 0, 0));
+            container.addChild(new Text(`${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", displayText(entry.agent))} ${itemIcon}`, 0, 0));
+            container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", displayText(entry.task)), 0, 0));
+            if (entry.warnings.length > 0) container.addChild(new Text(theme.fg("warning", displayText(formatWarningsBlock(entry.warnings))), 0, 0));
             for (const item of displayItems) {
               if (item.type === "toolCall") container.addChild(new Text(theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)), 0, 0));
             }
             if (finalOutput) {
               container.addChild(new Spacer(1));
-              container.addChild(new Markdown(finalOutput.trim(), 0, 0, markdownTheme));
+              container.addChild(new Markdown(displayText(finalOutput.trim()), 0, 0, markdownTheme));
             }
             const usage = formatUsageStats(entry.usage, entry.model);
-            if (usage) container.addChild(new Text(theme.fg("dim", usage), 0, 0));
+            if (usage) container.addChild(new Text(theme.fg("dim", displayText(usage)), 0, 0));
           }
           const totalUsage = formatUsageStats(aggregateUsage(details.results));
           if (totalUsage) {
@@ -1344,8 +1359,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
         for (const entry of details.results) {
           const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
-          text += `\n\n${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", entry.agent)} ${itemIcon}`;
-          if (entry.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(entry.warnings))}`;
+          text += `\n\n${theme.fg("muted", `─── Step ${entry.step}: `)}${theme.fg("accent", displayText(entry.agent))} ${itemIcon}`;
+          if (entry.warnings.length > 0) text += `\n${theme.fg("warning", displayText(formatWarningsBlock(entry.warnings)))}`;
           const displayItems = getDisplayItems(entry.messages);
           text += `\n${displayItems.length === 0 ? theme.fg("muted", "(no output)") : renderDisplayItems(displayItems, 5)}`;
         }
@@ -1370,18 +1385,18 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           const displayItems = getDisplayItems(entry.messages);
           const finalOutput = getResultOutput(entry);
           container.addChild(new Spacer(1));
-          container.addChild(new Text(`${theme.fg("muted", "─── ")}${theme.fg("accent", entry.agent)} ${itemIcon}`, 0, 0));
-          container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", entry.task), 0, 0));
-          if (entry.warnings.length > 0) container.addChild(new Text(theme.fg("warning", formatWarningsBlock(entry.warnings)), 0, 0));
+          container.addChild(new Text(`${theme.fg("muted", "─── ")}${theme.fg("accent", displayText(entry.agent))} ${itemIcon}`, 0, 0));
+          container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", displayText(entry.task)), 0, 0));
+          if (entry.warnings.length > 0) container.addChild(new Text(theme.fg("warning", displayText(formatWarningsBlock(entry.warnings))), 0, 0));
           for (const item of displayItems) {
             if (item.type === "toolCall") container.addChild(new Text(theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)), 0, 0));
           }
           if (finalOutput) {
             container.addChild(new Spacer(1));
-            container.addChild(new Markdown(finalOutput.trim(), 0, 0, markdownTheme));
+            container.addChild(new Markdown(displayText(finalOutput.trim()), 0, 0, markdownTheme));
           }
           const usage = formatUsageStats(entry.usage, entry.model);
-          if (usage) container.addChild(new Text(theme.fg("dim", usage), 0, 0));
+          if (usage) container.addChild(new Text(theme.fg("dim", displayText(usage)), 0, 0));
         }
         const totalUsage = formatUsageStats(aggregateUsage(details.results));
         if (totalUsage) {
@@ -1395,8 +1410,8 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       for (const entry of details.results) {
         const itemIcon = entry.exitCode === -1 ? theme.fg("warning", "⏳") : isSuccessful(entry) ? theme.fg("success", "✓") : theme.fg("error", "✗");
         const displayItems = getDisplayItems(entry.messages);
-        text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", entry.agent)} ${itemIcon}`;
-        if (entry.warnings.length > 0) text += `\n${theme.fg("warning", formatWarningsBlock(entry.warnings))}`;
+        text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", displayText(entry.agent))} ${itemIcon}`;
+        if (entry.warnings.length > 0) text += `\n${theme.fg("warning", displayText(formatWarningsBlock(entry.warnings)))}`;
         text += `\n${displayItems.length === 0 ? theme.fg("muted", entry.exitCode === -1 ? "(running...)" : "(no output)") : renderDisplayItems(displayItems, 5)}`;
       }
       if (!isRunning) {

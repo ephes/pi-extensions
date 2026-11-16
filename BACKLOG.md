@@ -13,6 +13,10 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Total protocol byte/event admission and explicit late-fetch response body ownership.
+
+- [x] Shared SDK-based external terminal text projection and status-only Kagi HTTP diagnostics.
+
 - [x] Strict structural Kagi JSON admission and fatal UTF-8 agent-definition decoding.
 
 - [x] Refuse ambiguous agent events and bound completed parallel details/answers across the workflow.
