@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Pin the bundled reviewer to authenticated `openai-codex/gpt-6.1-sol` and refuse missing, unapproved or unavailable review models before prompt creation/launch; preserve generic implementer fallback.
+- Pin the bundled reviewer to authenticated `openai-codex/gpt-6.1-sol` and refuse missing, unapproved or unavailable review models before prompt creation/launch, including whole chains and parallel batches that contain the reviewer; preserve generic implementer fallback.
 
 - Reject agent definitions changed during reading using descriptor generation, consumed length and final named identity, while preserving stable intentional links and discovery budgets.
 

@@ -250,3 +250,24 @@ test("installed reviewer selects only the approved authenticated model", async (
   assert.equal(argv[1][argv[1].indexOf("--model") + 1], "anthropic/claude-opus-4-6");
 
 });
+
+test("installed chain and parallel workflows refuse an unavailable reviewer before any step launches", async (t) => {
+  const { workflow, cwd } = await installedSmoke(t);
+  const other = { provider: "openai", id: "gpt-5.4" };
+  const spawns = fakeAgents(t, () => {});
+  const temporary = t.mock.method(fs, "mkdtempSync", fs.mkdtempSync);
+  syncBuiltinESMExports();
+  for (const params of [
+    { chain: [{ agent: "implementer", task: "synthetic" }, { agent: "reviewer", task: "{previous}" }] },
+    { tasks: [{ agent: "implementer", task: "synthetic" }, { agent: "reviewer", task: "synthetic" }] },
+  ]) {
+    const result = await workflow.definition.execute("refused-review-workflow", params, undefined, undefined, {
+      cwd, model: other, modelRegistry: { getAvailable: () => [other] },
+    } as unknown as ExtensionToolContext);
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /reviewer.*openai-codex\/gpt-6.1-sol/i);
+    assert.deepEqual((result.details as { results: unknown[] }).results, []);
+  }
+  assert.equal(spawns(), 0);
+  assert.equal(temporary.mock.callCount(), 0);
+});

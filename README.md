@@ -85,7 +85,9 @@ frontmatter and Pi's authenticated model list. Authenticate `openai-codex` via
 `/login` and ensure `gpt-6.1-sol` is available before using `/review` or a chain
 containing the reviewer. Missing, bare or different configured models, and an
 unavailable approved model, fail before review prompt files or children are
-created. The reviewer never falls back to another model or provider.
+created. Chains and parallel batches containing the reviewer are refused as a
+whole before any step or task launches. The reviewer never falls back to another
+model or provider.
 
 For the implementer and other agents, an unavailable configured model falls back in this order:
 
