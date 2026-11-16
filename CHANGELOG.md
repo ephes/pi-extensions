@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enforce the eight-task parallel ceiling in the schema and before discovery/input preparation; oversized batches return one bounded error and no task results.
+
 - Bound each delegate’s total protocol work to 64 MiB stdout and 65,536 nonblank events, including ignored events; refuse exhaustion after earlier answers and retire the owned process before prompt cleanup.
 - Cancel response bodies delivered by noncooperative fetches after cancellation or deadline, observing cleanup failures while preserving the primary outcome.
 

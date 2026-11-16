@@ -912,7 +912,7 @@ const TaskItem = Type.Object({
 const AgentWorkflowParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the bundled agent to invoke (single mode)." })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)." })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution." })),
+  tasks: Type.Optional(Type.Array(TaskItem, { maxItems: MAX_PARALLEL_TASKS, description: "Up to 8 {agent, task} items for parallel execution." })),
   chain: Type.Optional(Type.Array(TaskItem, { maxItems: MAX_CHAIN_STEPS, description: "Up to 32 sequential {agent, task} steps. Use {previous} to insert prior output." })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent workflow process (single mode)." })),
   mode: Type.Optional(StringEnum(["single", "parallel", "chain"] as const, { description: "Optional explicit mode for readability." })),
@@ -954,7 +954,11 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         pending = partial;
         if (flush || !progressTimer) flushProgress();
       } : undefined;
-      const discovery = discoverBundledAgents();
+      const tooManyTasks = (params.tasks?.length ?? 0) > MAX_PARALLEL_TASKS;
+      // Refuse cardinality before discovering definitions or walking submitted input.
+      const discovery = tooManyTasks
+        ? { agents: [], agentsDir: "", diagnostics: [] }
+        : discoverBundledAgents();
       const agents = discovery.agents;
       const availableModels: ModelRef[] = ctx.modelRegistry.getAvailable().map((model) => ({
         provider: model.provider,
@@ -981,6 +985,11 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       ];
 
       const runWorkflow = async (): Promise<ToolResult> => {
+        if (tooManyTasks) {
+          return { isError: true, content: toolContent("Agent workflow exceeds the limit of 8 parallel tasks."),
+            details: makeDetails("parallel")([]) };
+        }
+
         if (modeCount !== 1) {
           return {
             content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
@@ -1067,13 +1076,6 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         }
 
         if (params.tasks && params.tasks.length > 0) {
-          if (params.tasks.length > MAX_PARALLEL_TASKS) {
-            return {
-              content: toolContent(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`),
-              details: makeDetails("parallel")([]),
-            };
-          }
-
           const allResults: SingleResult[] = new Array(params.tasks.length).fill(null).map((_, index) => ({
             agent: params.tasks?.[index]?.agent ?? "unknown",
             task: params.tasks?.[index]?.task ?? "",

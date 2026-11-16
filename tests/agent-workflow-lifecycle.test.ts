@@ -175,6 +175,35 @@ test("chain cardinality is refused before prompt creation or launch", async (t) 
   assert.match(JSON.stringify(result), /32.*steps|steps.*32/);
 });
 
+for (const count of [9, 10000]) {
+  test(`parallel cardinality ${count} is refused before discovery or input preparation`, async (t) => {
+    const { children, executeParams } = setup(t);
+    const directory = t.mock.method(fs, "opendirSync", fs.opendirSync);
+    const temporary = t.mock.method(fs, "mkdtempSync", fs.mkdtempSync);
+    syncBuiltinESMExports();
+    const result = await executeParams({ tasks: Array.from({ length: count }, () => ({ agent: "unknown", task: "" })) });
+    assert.equal(result.isError, true);
+    assert.equal(directory.mock.callCount(), 0);
+    assert.equal(temporary.mock.callCount(), 0);
+    assert.equal(children.length, 0);
+    assert.deepEqual(result.details.results, []);
+    assert.equal(result.content[0].text, "Agent workflow exceeds the limit of 8 parallel tasks.");
+  });
+}
+
+test("boundary-sized parallel batch executes all eight tasks in input order", async (t) => {
+  const { children, execute } = setup(t);
+  const run = execute(undefined, false, "", true);
+  for (let i = 0; i < 8; i++) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    children[i].stdout.emit("data", messageLine(`answer-${i}`));
+    children[i].emit("close", 0, null);
+  }
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.details.results.map(item => item.task), Array.from({ length: 8 }, (_, i) => `task-${i}`));
+});
+
 test("boundary-sized chain executes all 32 steps in input order", async (t) => {
   const { children, tasks, executeChain } = setup(t);
   const run = executeChain(Array.from({ length: 32 }, (_, i) => ({ agent: "implementer", task: `step-${i}: {previous}` })));

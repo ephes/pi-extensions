@@ -19,3 +19,10 @@ test("agent_workflow extension registers the agent_workflow tool", () => {
     label: "Agent Workflow",
   });
 });
+
+
+test("parallel task schema admits at most eight tasks", () => {
+  let tool: { parameters: { properties: { tasks: { maxItems?: number } } } };
+  agentWorkflowExtension({ registerTool(value: typeof tool) { tool = value; } } as never);
+  assert.equal(tool!.parameters.properties.tasks.maxItems, 8);
+});
