@@ -53,16 +53,16 @@ function setup(t: TestContext) {
     ? { chain: [{ agent: "implementer", task: "first" }, { agent: "reviewer", task }] }
     : parallel ? { tasks: Array.from({ length: 8 }, (_, i) => ({ agent: "implementer", task: `task-${i}` })) }
     : { agent: "implementer", task: "test" }, signal, update, {
-      cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+      cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
     } as never);
   const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
   const render = (result: StubResult, expanded: boolean) =>
     tool.renderResult(result, { expanded, isPartial: false }, plainTheme).render(200).map((line) => line.trimEnd()).join("\n");
   const executeChain = (chain: Array<{ agent: string; task: string }>, update?: (result: StubResult) => void) => tool.execute("test", { chain }, undefined, update, {
-    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
   });
   const executeParams = (params: unknown) => tool.execute("test", params, undefined, undefined, {
-    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
   });
   return { children, execute, executeChain, executeParams, render, tasks, spawnOptions, spawnArgs };
 }
@@ -173,6 +173,35 @@ test("chain cardinality is refused before prompt creation or launch", async (t) 
   assert.equal(temporary.mock.callCount(), 0);
   assert.equal(result.isError, true);
   assert.match(JSON.stringify(result), /32.*steps|steps.*32/);
+});
+
+for (const count of [9, 10000]) {
+  test(`parallel cardinality ${count} is refused before discovery or input preparation`, async (t) => {
+    const { children, executeParams } = setup(t);
+    const directory = t.mock.method(fs, "opendirSync", fs.opendirSync);
+    const temporary = t.mock.method(fs, "mkdtempSync", fs.mkdtempSync);
+    syncBuiltinESMExports();
+    const result = await executeParams({ tasks: Array.from({ length: count }, () => ({ agent: "unknown", task: "" })) });
+    assert.equal(result.isError, true);
+    assert.equal(directory.mock.callCount(), 0);
+    assert.equal(temporary.mock.callCount(), 0);
+    assert.equal(children.length, 0);
+    assert.deepEqual(result.details.results, []);
+    assert.equal(result.content[0].text, "Agent workflow exceeds the limit of 8 parallel tasks.");
+  });
+}
+
+test("boundary-sized parallel batch executes all eight tasks in input order", async (t) => {
+  const { children, execute } = setup(t);
+  const run = execute(undefined, false, "", true);
+  for (let i = 0; i < 8; i++) {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    children[i].stdout.emit("data", messageLine(`answer-${i}`));
+    children[i].emit("close", 0, null);
+  }
+  const result = await run;
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.details.results.map(item => item.task), Array.from({ length: 8 }, (_, i) => `task-${i}`));
 });
 
 test("boundary-sized chain executes all 32 steps in input order", async (t) => {
@@ -783,7 +812,7 @@ for (const oversized of [false, true]) {
     children[1].stdout.emit("data", JSON.stringify({ type: "message_end", message: { role: "assistant", content, stopReason: "stop" } }) + "\n");
     children[1].emit("close", 0, null);
     const result = await run;
-    assert.deepEqual(result.content, [{ type: "text", text: "Warnings:\n- Requested model anthropic/claude-opus-4-6 is unavailable; falling back to openai/gpt-5.4.\n\n" + text }]);
+    assert.deepEqual(result.content, [{ type: "text", text: text }]);
     const notice = `[Previous agent workflow output truncated from ${text.length} to 12000 characters.]\n\n`;
     const capped = oversized ? notice + text.slice(0, 12000 - notice.length) : text;
     assert.equal(tasks[1], `Task: ${capped}`);

@@ -22,7 +22,7 @@ test("discoverBundledAgents finds bundled implementer and reviewer definitions",
 
   const reviewer = discovery.agents.find((agent) => agent.name === "reviewer");
   assert.ok(reviewer, "reviewer agent should exist");
-  assert.equal(reviewer?.model, "anthropic/claude-opus-4-6");
+  assert.equal(reviewer?.model, "openai-codex/gpt-6.1-sol");
   assert.deepEqual(reviewer?.tools, ["read", "grep", "find", "ls", "bash"]);
   assert.match(reviewer?.systemPrompt ?? "", /read-only/);
 });
@@ -48,6 +48,11 @@ function fixtureDiscovery(t: import("node:test").TestContext, definitions: Recor
   const originalOpen = fs.openSync;
   t.mock.method(fs, "openSync", (file: string, flags: number) => originalOpen(
     path.dirname(file) === agentsDir ? path.join(fixtureDir, path.basename(file)) : file, flags,
+  ));
+  const originalStat = fs.statSync;
+  t.mock.method(fs, "statSync", (file: string, options: unknown) => originalStat(
+    typeof file === "string" && path.dirname(file) === agentsDir ? path.join(fixtureDir, path.basename(file)) : file,
+    options as never,
   ));
   // Keep the pre-admission implementation testable for the red regression run.
   const originalRead = fs.readFileSync;
@@ -156,7 +161,10 @@ test("descriptor growth cannot bypass the actual definition byte budget and clos
     "valid.md": definition("name: valid\ndescription: healthy"),
   });
   const stat = fs.fstatSync;
-  t.mock.method(fs, "fstatSync", (fd: number) => Object.assign(stat(fd), { size: 1 }));
+  t.mock.method(fs, "fstatSync", (fd: number, options: unknown) => {
+    const result = stat(fd, options as never);
+    return result.size > 256 * 1024 ? Object.assign(result, { size: typeof result.size === "bigint" ? 1n : 1 }) : result;
+  });
   const close = t.mock.method(fs, "closeSync", fs.closeSync);
   const read = t.mock.method(fs, "readSync", fs.readSync);
   syncBuiltinESMExports();
@@ -180,12 +188,13 @@ test("symlink to FIFO is refused without blocking discovery", (t) => {
     import { discoverBundledAgents } from ${JSON.stringify(moduleUrl)};
     const root = discoverBundledAgents().agentsDir;
     const fixture = ${JSON.stringify(fixtureDir)};
-    const readdir = fs.readdirSync, opendir = fs.opendirSync, open = fs.openSync, read = fs.readFileSync;
+    const readdir = fs.readdirSync, opendir = fs.opendirSync, open = fs.openSync, read = fs.readFileSync, stat = fs.statSync;
     fs.readdirSync = (dir, opts) => readdir(dir === root ? fixture : dir, opts);
     fs.opendirSync = (dir, opts) => opendir(dir === root ? fixture : dir, opts);
     const mapped = file => typeof file === 'string' && file.startsWith(root + '/') ? fixture + file.slice(root.length) : file;
     fs.openSync = (file, ...args) => open(mapped(file), ...args);
     fs.readFileSync = (file, ...args) => read(mapped(file), ...args);
+    fs.statSync = (file, ...args) => stat(mapped(file), ...args);
     syncBuiltinESMExports();
     console.log(JSON.stringify(discoverBundledAgents()));`;
   const probe = childProcess.spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { timeout: 10000, killSignal: "SIGKILL", encoding: "utf8" });
@@ -251,9 +260,7 @@ for (const valid of [true, false]) {
       return [`${i}.md`, text.padEnd(256 * 1024, "x")];
     }));
     const { directories } = fixtureDiscovery(t, files);
-    // Pin actual reads rather than relying on stat sizes.
-    const stat = fs.fstatSync;
-    t.mock.method(fs, "fstatSync", (fd: number) => Object.assign(stat(fd), { size: 1 }));
+    // Each file fits the per-definition limit; actual reads must still share the aggregate budget.
     const read = t.mock.method(fs, "readSync", fs.readSync);
     const open = t.mock.method(fs, "openSync", fs.openSync);
     const close = t.mock.method(fs, "closeSync", fs.closeSync);
@@ -290,4 +297,84 @@ test("directory iterator errors discard partial discovery and close its descript
   t.mock.restoreAll();
   syncBuiltinESMExports();
   assert.throws(() => directories[0].readSync(), { code: "ERR_DIR_CLOSED" });
+});
+
+
+for (const mutation of ["rewrite", "truncate", "append", "replace", "retarget-link"] as const) {
+  test(`definition ${mutation} during a chunked read is isolated and closes its descriptor`, (t) => {
+    const original = definition("name: changing\ndescription: synthetic\ntools: read\nmodel: openai/old") + "A".repeat(256);
+    const updated = original.replace("openai/old", "openai/new").replaceAll("A", "B");
+    assert.equal(Buffer.byteLength(updated), Buffer.byteLength(original));
+    const { fixtureDir } = fixtureDiscovery(t, {
+      "changing.md": original,
+      "valid.md": definition("name: valid\ndescription: healthy"),
+    });
+    const named = path.join(fixtureDir, "changing.md");
+    const target = path.join(fixtureDir, "target.txt");
+    if (mutation === "retarget-link") {
+      fs.renameSync(named, target);
+      fs.symlinkSync(target, named);
+    }
+    const open = fs.openSync;
+    let changingFd = -1;
+    t.mock.method(fs, "openSync", (file: string, flags: number) => {
+      const fd = open(file, flags);
+      if (path.basename(file) === "changing.md") changingFd = fd;
+      return fd;
+    });
+    const read = fs.readSync;
+    let changed = false;
+    t.mock.method(fs, "readSync", (fd: number, bytes: Buffer, offset: number, length: number, position: null) => {
+      const consumed = read(fd, bytes, offset, fd === changingFd ? Math.min(length, original.indexOf("Private prompt")) : length, position);
+      if (fd === changingFd && consumed > 0 && !changed) {
+        changed = true;
+        if (mutation === "replace") {
+          fs.renameSync(named, target);
+          fs.writeFileSync(named, updated);
+        } else if (mutation === "retarget-link") {
+          const other = path.join(fixtureDir, "other.txt");
+          fs.writeFileSync(other, updated);
+          fs.unlinkSync(named);
+          fs.symlinkSync(other, named);
+        } else {
+          fs.writeFileSync(named, mutation === "truncate" ? updated.slice(0, -16) : mutation === "append" ? updated + "tail" : updated);
+          // Make the rewrite generation deterministic even on coarse clocks.
+          const later = new Date(Date.now() + 2000);
+          fs.utimesSync(named, later, later);
+        }
+      }
+      return consumed;
+    });
+    const close = t.mock.method(fs, "closeSync", fs.closeSync);
+    syncBuiltinESMExports();
+    const discovery = discoverBundledAgents();
+    assert.equal(changed, true);
+    assert.deepEqual(discovery.agents.map(agent => agent.name), ["valid"]);
+    assert.deepEqual(discovery.diagnostics, ["Invalid bundled agent definition: changing.md"]);
+    assert.equal(close.mock.callCount(), 2);
+  });
+}
+
+test("stable chunked definition reads preserve the configured frontmatter and body", (t) => {
+  fixtureDiscovery(t, { "stable.md": definition("name: stable\ndescription: synthetic\ntools: read\nmodel: provider/model") + " Grüße 🦊" });
+  const read = fs.readSync;
+  t.mock.method(fs, "readSync", (fd: number, bytes: Buffer, offset: number, length: number, position: null) => read(fd, bytes, offset, Math.min(length, 7), position));
+  syncBuiltinESMExports();
+  const discovery = discoverBundledAgents();
+  assert.deepEqual(discovery.diagnostics, []);
+  assert.equal(discovery.agents[0].model, "provider/model");
+  assert.equal(discovery.agents[0].systemPrompt, "Private prompt content Grüße 🦊");
+});
+
+
+test("definition read must consume its admitted length before accepting EOF", (t) => {
+  const content = definition("name: short\ndescription: synthetic") + "tail";
+  fixtureDiscovery(t, { "short.md": content });
+  const read = fs.readSync;
+  t.mock.method(fs, "readSync", (fd: number, bytes: Buffer, offset: number, length: number, position: null) =>
+    offset === 0 ? read(fd, bytes, offset, Math.min(length, Buffer.byteLength(content) - 4), position) : 0);
+  syncBuiltinESMExports();
+  const discovery = discoverBundledAgents();
+  assert.deepEqual(discovery.agents, []);
+  assert.deepEqual(discovery.diagnostics, ["Invalid bundled agent definition: short.md"]);
 });

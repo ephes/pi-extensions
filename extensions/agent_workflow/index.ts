@@ -10,7 +10,7 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseUnambiguousJson } from "../../shared/json.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
-import { resolveAgentModel, type ModelRef } from "./model_resolution.js";
+import { resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
 
 const PROGRESS_FAILURE = new Error("Agent workflow progress delivery failed; retry the task.");
 
@@ -508,14 +508,16 @@ async function runSingleAgent(
     };
   }
 
-  const modelSelection = resolveAgentModel(agent.model, availableModels, currentModel);
+  const modelSelection = agent.name === "reviewer"
+    ? resolveReviewerModel(agent.model, availableModels)
+    : resolveAgentModel(agent.model, availableModels, currentModel);
   if (!modelSelection.resolvedModel) {
     return {
       agent: agent.name,
       task,
       exitCode: 1,
       messages: [],
-      stderr: "No authenticated Pi models are configured. Run /login or configure an API key.",
+      stderr: modelSelection.warning ?? "No authenticated Pi models are configured. Run /login or configure an API key.",
       warnings: modelSelection.warning ? [modelSelection.warning] : [],
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
       requestedModel: agent.model,
@@ -912,7 +914,7 @@ const TaskItem = Type.Object({
 const AgentWorkflowParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "Name of the bundled agent to invoke (single mode)." })),
   task: Type.Optional(Type.String({ description: "Task to delegate (single mode)." })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution." })),
+  tasks: Type.Optional(Type.Array(TaskItem, { maxItems: MAX_PARALLEL_TASKS, description: "Up to 8 {agent, task} items for parallel execution." })),
   chain: Type.Optional(Type.Array(TaskItem, { maxItems: MAX_CHAIN_STEPS, description: "Up to 32 sequential {agent, task} steps. Use {previous} to insert prior output." })),
   cwd: Type.Optional(Type.String({ description: "Working directory for the agent workflow process (single mode)." })),
   mode: Type.Optional(StringEnum(["single", "parallel", "chain"] as const, { description: "Optional explicit mode for readability." })),
@@ -954,7 +956,11 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         pending = partial;
         if (flush || !progressTimer) flushProgress();
       } : undefined;
-      const discovery = discoverBundledAgents();
+      const tooManyTasks = (params.tasks?.length ?? 0) > MAX_PARALLEL_TASKS;
+      // Refuse cardinality before discovering definitions or walking submitted input.
+      const discovery = tooManyTasks
+        ? { agents: [], agentsDir: "", diagnostics: [] }
+        : discoverBundledAgents();
       const agents = discovery.agents;
       const availableModels: ModelRef[] = ctx.modelRegistry.getAvailable().map((model) => ({
         provider: model.provider,
@@ -981,6 +987,11 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
       ];
 
       const runWorkflow = async (): Promise<ToolResult> => {
+        if (tooManyTasks) {
+          return { isError: true, content: toolContent("Agent workflow exceeds the limit of 8 parallel tasks."),
+            details: makeDetails("parallel")([]) };
+        }
+
         if (modeCount !== 1) {
           return {
             content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
@@ -1005,6 +1016,19 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
           if (taskBytes > MAX_TASK_INPUT_BYTES || inputBytes > MAX_WORKFLOW_INPUT_BYTES) {
             return { isError: true, content: toolContent("Agent workflow input exceeds byte limit (1 MiB per task; 4 MiB total including system prompts and task labels)."),
               details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]) };
+          }
+        }
+
+        // Refuse an unapproved or unavailable reviewer model before any chain step or
+        // parallel task creates prompt files or launches a child.
+        const reviewer = agents.find(agent => agent.name === "reviewer");
+        if ((hasChain || hasTasks) && submitted.some(item => item.agent === "reviewer")) {
+          const selection = reviewer
+            ? resolveReviewerModel(reviewer.model, availableModels)
+            : { warning: "Bundled reviewer definition is unavailable; it must be discoverable and use openai-codex/gpt-6.1-sol." };
+          if (!selection.resolvedModel) {
+            return { isError: true, content: toolContent(selection.warning ?? "Bundled reviewer model is unavailable."),
+              details: makeDetails(hasChain ? "chain" : "parallel")([]) };
           }
         }
 
@@ -1067,13 +1091,6 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         }
 
         if (params.tasks && params.tasks.length > 0) {
-          if (params.tasks.length > MAX_PARALLEL_TASKS) {
-            return {
-              content: toolContent(`Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.`),
-              details: makeDetails("parallel")([]),
-            };
-          }
-
           const allResults: SingleResult[] = new Array(params.tasks.length).fill(null).map((_, index) => ({
             agent: params.tasks?.[index]?.agent ?? "unknown",
             task: params.tasks?.[index]?.task ?? "",

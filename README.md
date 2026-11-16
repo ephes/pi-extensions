@@ -57,6 +57,10 @@ with filename-only warnings so no ambiguous agent can be invoked. Discovery
 warnings are included in each tool result and its display, without raw stderr
 writes.
 Definition bytes must be valid UTF-8; malformed or incomplete sequences are rejected without replacement decoding, with the same filename-only warning. Valid multibyte names, model IDs and prompts are preserved.
+Definitions are accepted only when consumed length and descriptor identity, size,
+mtime and ctime remain unchanged across the read and a final pathname check
+still resolves to that generation. In-place edits, truncation and replacement
+(including symlink retargeting) are isolated as invalid definitions.
 Definitions must resolve to regular files of at most 256 KiB, including bytes
 added while reading. Symlinks to regular files remain supported, including
 targets outside `agents/`; directories, devices and FIFOs are refused through
@@ -71,12 +75,21 @@ iterator error discards every agent and per-file warning from that generation
 and returns one fixed diagnostic; no partial allowlist can launch a delegate.
 File and directory descriptors close on success and refusal.
 
-Bundled agent frontmatter prefers these model IDs:
+Bundled agent frontmatter uses these model IDs:
 
 - `implementer` — `openai/gpt-5.4`
-- `reviewer` — `anthropic/claude-opus-4-6`
+- `reviewer` — `openai-codex/gpt-6.1-sol` (required)
 
-If an exact bundled model is unavailable, `agent_workflow` now falls back in this order:
+The bundled `reviewer` requires the exact provider-qualified model above in its
+frontmatter and Pi's authenticated model list. Authenticate `openai-codex` via
+`/login` and ensure `gpt-6.1-sol` is available before using `/review` or a chain
+containing the reviewer. Missing, bare or different configured models, and an
+unavailable approved model, fail before review prompt files or children are
+created. Chains and parallel batches containing the reviewer are refused as a
+whole before any step or task launches. The reviewer never falls back to another
+model or provider.
+
+For the implementer and other agents, an unavailable configured model falls back in this order:
 
 1. the current Pi session model, when it is authenticated
 2. the first authenticated model returned by Pi
@@ -90,7 +103,7 @@ selected model until an observation arrives. Missing observations do not erase
 prior ones. Provider-qualified selections also match their bare model ID. A
 reported mismatch adds one bounded warning; it never changes model selection.
 
-If you want deterministic model pinning instead of fallback behavior, edit the frontmatter in `agents/*.md` to match your environment.
+For agents other than the reviewer, edit the frontmatter in `agents/*.md` to prefer a model available in your environment; their fallback policy still applies.
 
 ## Requirements
 
@@ -210,7 +223,7 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - Each web dispatcher is destroyed through Undici's public API after its hop. Cleanup waits at most 100 ms, or stops waiting immediately on cancellation. Cleanup throws, rejections and stalls preserve the primary fetch result or sanitized failure; late rejections are observed without logging private transport errors.
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
-- Chain workflows admit at most 32 steps before prompt preparation or process launch; excess steps return an error verdict. Submitted workflows admit at most 1 MiB of UTF-8 task text per task and 4 MiB total before any prompt files or children are created. The total includes each invocation’s system prompt, agent label and working-directory label. Chain handoff text has its separate allowance below; it does not consume the submitted-input budget. Rejected workflows return a fixed diagnostic without echoing inputs.
+- Parallel workflows admit at most 8 tasks in the schema and at runtime. Excess tasks return one fixed error with empty results before definition discovery or input preparation. Chain workflows admit at most 32 steps before prompt preparation or process launch; excess steps return an error verdict. Submitted workflows admit at most 1 MiB of UTF-8 task text per task and 4 MiB total before any prompt files or children are created. The total includes each invocation’s system prompt, agent label and working-directory label. Chain handoff text has its separate allowance below; it does not consume the submitted-input budget. Rejected workflows return a fixed diagnostic without echoing inputs.
 - Chain mode shares a 12,000 UTF-16 code-unit handoff allowance across all `{previous}` occurrences in each prepared prompt, including truncation notices. Each placeholder receives the same bounded literal prior output, including dollar syntax and any `{previous}` text in that output; inserted text is not expanded again. Caller-authored task text is outside this handoff allowance. If a complete truncation notice cannot fit, each placeholder receives a plain output prefix (or empty text when its allowance is zero); step `handoff` metadata records source/inserted characters and whether context was truncated.
 - Across the whole chain, bulk details retain the most recent messages within 4 MiB of serialized message bytes / 256 messages, 12,000 task-text code units and 64 KiB of stderr. The final progress snapshot uses these same budgets. Earlier steps keep their verdicts, usage and provenance; `omitted` counts removed messages, task characters and stderr bytes, with a result-detail truncation warning that can apply to the current step as well as earlier steps. Task-detail clipping does not change the prompt executed by the child. Each step still has an outcome record, so small outcome metadata grows with step count. The latest step's answer and the next handoff are preserved independently of older detail eviction. The separate 32-step admission ceiling bounds executed steps and outcome metadata.
 - Parallel completed results share the chain’s 4 MiB / 256-message, 12,000-task-character and 64 KiB stderr detail limits, retaining one ordered outcome per task. Each task also retains an independent `output` answer within an equal share of a 1 MiB serialized-JSON output budget across the batch, so history eviction does not erase answers. Answers exceeding their share keep a Unicode-safe prefix and truncation notice; `omitted.outputChars` records removed source characters. Scalar provenance/agent labels are capped at 512 characters, error messages at 2,048, and at most eight 512-character warnings are retained before adding omission notices; `omitted.metadataChars` records clipped metadata. Ordinary small answers remain complete. The final callback and expanded display use these retained answers.

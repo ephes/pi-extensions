@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Pin the bundled reviewer to authenticated `openai-codex/gpt-6.1-sol` and refuse missing, unapproved or unavailable review models before prompt creation/launch, including whole chains and parallel batches that contain the reviewer; preserve generic implementer fallback.
+
+- Reject agent definitions changed during reading using descriptor generation, consumed length and final named identity, while preserving stable intentional links and discovery budgets.
+
+- Enforce the eight-task parallel ceiling in the schema and before discovery/input preparation; oversized batches return one bounded error and no task results.
+
 - Bound each delegate’s total protocol work to 64 MiB stdout and 65,536 nonblank events, including ignored events; refuse exhaustion after earlier answers and retire the owned process before prompt cleanup.
 - Cancel response bodies delivered by noncooperative fetches after cancellation or deadline, observing cleanup failures while preserving the primary outcome.
 

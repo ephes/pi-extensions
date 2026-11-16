@@ -112,7 +112,7 @@ function fakeAgents(t: import("node:test").TestContext, inspect: (args: string[]
 }
 
 const fakeContext = (cwd: string) => ({
-  cwd, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }] },
+  cwd, modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
 }) as unknown as ExtensionToolContext;
 
 test("installed tool policies reject empty and unknown lists without default-capability launches", async (t) => {
@@ -193,4 +193,89 @@ test("installed task file becomes the exact initial message through Pi's own @fi
   assert.deepEqual(processed.images, []);
   assert.equal(processed.text, `<file name="${taskPath}">\nTask: ${task}\n</file>\n`);
   assert.equal(fs.existsSync(taskPath), false);
+});
+
+
+test("installed reviewer fails closed before prompt creation for unapproved or unavailable models", async (t) => {
+  const { workflow, installed, cwd } = await installedSmoke(t);
+  const reviewerPath = path.join(installed, "agents/reviewer.md");
+  const bundled = fs.readFileSync(reviewerPath, "utf8");
+  const approved = { provider: "openai-codex", id: "gpt-6.1-sol" };
+  const other = { provider: "anthropic", id: "claude-opus-4-6" };
+  const spawns = fakeAgents(t, () => {});
+  const temporary = t.mock.method(fs, "mkdtempSync", fs.mkdtempSync);
+  syncBuiltinESMExports();
+  const results = [];
+  for (const [model, available] of [
+    ["anthropic/claude-opus-4-6", [approved, other]],
+    ["gpt-6.1-sol", [approved, other]],
+    ["openai/gpt-6.1-sol", [approved, other]],
+    [undefined, [approved, other]],
+    ["openai-codex/gpt-6.1-sol", [other]],
+    ["openai-codex/gpt-6.1-sol", []],
+  ] as const) {
+    fs.writeFileSync(reviewerPath, bundled.replace(/^model:.*\n/m, model ? `model: ${model}\n` : ""));
+    results.push(await workflow.definition.execute("refused-review", { agent: "reviewer", task: "synthetic" }, undefined, undefined, {
+      cwd, model: other, modelRegistry: { getAvailable: () => available },
+    } as unknown as ExtensionToolContext));
+  }
+  assert.equal(spawns(), 0);
+  assert.equal(temporary.mock.callCount(), 0);
+  for (const result of results) {
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /reviewer.*openai-codex\/gpt-6.1-sol/i);
+    assert.doesNotMatch(JSON.stringify(result.content), /falling back/);
+  }
+});
+
+test("installed reviewer selects only the approved authenticated model", async (t) => {
+  const { workflow, cwd } = await installedSmoke(t);
+  const approved = { provider: "openai-codex", id: "gpt-6.1-sol" };
+  const other = { provider: "anthropic", id: "claude-opus-4-6" };
+  const argv: string[][] = [];
+  const spawns = fakeAgents(t, args => { argv.push(args); });
+  const result = await workflow.definition.execute("approved-review", { agent: "reviewer", task: "synthetic" }, undefined, undefined, {
+    cwd, model: other, modelRegistry: { getAvailable: () => [other, approved] },
+  } as unknown as ExtensionToolContext);
+  assert.equal(result.isError, undefined);
+  assert.equal(spawns(), 1);
+  assert.equal(argv[0][argv[0].indexOf("--model") + 1], "openai-codex/gpt-6.1-sol");
+  assert.equal((result.details as { results: { requestedModel: string }[] }).results[0].requestedModel, "openai-codex/gpt-6.1-sol");
+  // The same installed workflow retains generic fallback for the implementer.
+  const fallback = await workflow.definition.execute("implementer-fallback", { agent: "implementer", task: "synthetic" }, undefined, undefined, {
+    cwd, model: other, modelRegistry: { getAvailable: () => [other] },
+  } as unknown as ExtensionToolContext);
+  assert.equal(fallback.isError, undefined);
+  assert.equal(spawns(), 2);
+  assert.equal(argv[1][argv[1].indexOf("--model") + 1], "anthropic/claude-opus-4-6");
+
+});
+
+test("installed chain and parallel workflows refuse an unavailable reviewer before any step launches", async (t) => {
+  const { workflow, installed, cwd } = await installedSmoke(t);
+  const other = { provider: "openai", id: "gpt-5.4" };
+  const spawns = fakeAgents(t, () => {});
+  const temporary = t.mock.method(fs, "mkdtempSync", fs.mkdtempSync);
+  syncBuiltinESMExports();
+  for (const params of [
+    { chain: [{ agent: "implementer", task: "synthetic" }, { agent: "reviewer", task: "{previous}" }] },
+    { tasks: [{ agent: "implementer", task: "synthetic" }, { agent: "reviewer", task: "synthetic" }] },
+  ]) {
+    const result = await workflow.definition.execute("refused-review-workflow", params, undefined, undefined, {
+      cwd, model: other, modelRegistry: { getAvailable: () => [other] },
+    } as unknown as ExtensionToolContext);
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result.content), /reviewer.*openai-codex\/gpt-6.1-sol/i);
+    assert.deepEqual((result.details as { results: unknown[] }).results, []);
+  }
+  // A reviewer definition dropped by discovery is refused the same way.
+  fs.rmSync(path.join(installed, "agents/reviewer.md"));
+  const missing = await workflow.definition.execute("missing-reviewer-workflow",
+    { chain: [{ agent: "implementer", task: "synthetic" }, { agent: "reviewer", task: "{previous}" }] }, undefined, undefined, {
+      cwd, model: other, modelRegistry: { getAvailable: () => [other, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
+    } as unknown as ExtensionToolContext);
+  assert.equal(missing.isError, true);
+  assert.match(JSON.stringify(missing.content), /reviewer definition is unavailable/);
+  assert.equal(spawns(), 0);
+  assert.equal(temporary.mock.callCount(), 0);
 });
