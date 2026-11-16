@@ -153,7 +153,8 @@ test("searchKagi and the kagi_search tool send the normalized limit and the shar
   assert.ok(requests.every((request) => request.userAgent === USER_AGENT));
 });
 
-type SearchTool = { execute(id: string, params: unknown, signal: undefined, update: undefined): Promise<{
+type SearchProgress = { content: Array<{ type: "text"; text: string }>; details: { query: string; limit: number } };
+type SearchTool = { execute(id: string, params: unknown, signal: undefined, update: ((progress: SearchProgress) => void) | undefined): Promise<{
   content: Array<{ type: "text"; text: string }>;
   details: { resultCount: number; relatedCount: number; originalResultCount: number; originalRelatedCount: number; truncated: boolean; urls: string[]; meta?: Record<string, unknown> };
 }> };
@@ -162,6 +163,45 @@ function registeredSearch() {
   kagiSearchExtension({ registerTool(definition: SearchTool) { tool = definition; } } as never);
   return tool;
 }
+
+test("Kagi refuses over-limit UTF-8 queries before progress or transport, including before trimming", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
+  const progress: SearchProgress[] = [];
+  for (const query of ["x".repeat(8193), "é".repeat(4097), "😀".repeat(2048) + "x", " ".repeat(8192) + "q"]) {
+    await assert.rejects(registeredSearch().execute("test", { query }, undefined, update => progress.push(update)),
+      { message: "Kagi query exceeds the 8192-byte UTF-8 limit." });
+    await assert.rejects(searchKagi(query), { message: "Kagi query exceeds the 8192-byte UTF-8 limit." });
+  }
+  assert.equal(progress.length, 0);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test("Kagi admits exact-byte boundaries and preserves full query text with bounded progress", async (t) => {
+  const queries: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: URL) => {
+    queries.push(url.searchParams.get("q")!);
+    return Response.json({ data: [] });
+  });
+  for (const query of ["x".repeat(8192), "é".repeat(4096), "😀".repeat(2048)]) {
+    assert.equal(Buffer.byteLength(query), 8192);
+    const progress: SearchProgress[] = [];
+    await registeredSearch().execute("test", { query }, undefined, update => progress.push(update));
+    await searchKagi(query);
+    assert.deepEqual(queries.splice(0), [query, query]);
+    assert.equal(progress.length, 1);
+    assert.ok(progress[0].details.query.length <= 512);
+    assert.ok(progress[0].content[0].text.length <= 550);
+    assert.ok(progress[0].details.query.endsWith("…"));
+    assert.ok(query.startsWith(progress[0].details.query.slice(0, -1)));
+    assert.doesNotMatch(progress[0].details.query, /[\uD800-\uDBFF]…$/);
+    assert.equal(progress[0].content[0].text, `Searching Kagi for "${progress[0].details.query}"...`);
+  }
+  const progress: SearchProgress[] = [];
+  await registeredSearch().execute("test", { query: "  Café 東京  " }, undefined, update => progress.push(update));
+  assert.deepEqual(queries, ["Café 東京"]);
+  assert.equal(progress[0].details.query, "Café 東京");
+  await assert.rejects(registeredSearch().execute("test", { query: "  " }, undefined, undefined), /Query cannot be empty/);
+});
 
 test("registered search enforces normalized result counts locally", async (t) => {
   const rows = Array.from({ length: 30 }, (_, i) => ({ t: 0, url: `https://example.com/${i}`, title: `Result ${i}` }));
@@ -243,7 +283,7 @@ test("registered search keeps ordinary and empty search output with truthful ret
 test("registered search bounds aggregate URL retention and query labels", async (t) => {
   const rows = Array.from({ length: 20 }, (_, i) => ({ t: 0, url: `https://example.com/${i}/${"u".repeat(2000)}`, title: "Title" }));
   t.mock.method(globalThis, "fetch", async () => Response.json({ data: rows }));
-  const result = await registeredSearch().execute("test", { query: "Q".repeat(40000), limit: 20 }, undefined, undefined);
+  const result = await registeredSearch().execute("test", { query: "Q".repeat(8192), limit: 20 }, undefined, undefined);
   assert.ok(result.content[0].text.length < 32768);
   assert.ok(JSON.stringify(result.details).length < 32768);
   assert.ok(result.details.resultCount > 0 && result.details.resultCount < 20);

@@ -117,6 +117,13 @@ export KAGI_API_KEY="your-api-key"
 
 The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default. The tool enforces this count locally even if the API returns extra rows.
 
+Queries accept at most 8,192 UTF-8 bytes, including surrounding whitespace.
+The tool and shared `searchKagi` helper refuse larger inputs before progress or
+URL construction/fetch. The tool trims admitted queries and rejects empty ones;
+it sends the complete trimmed query to Kagi. Progress text and details retain
+only a 512-character query preview (including an ellipsis when shortened),
+without splitting surrogate pairs.
+
 The tool retains at most 24,000 characters of formatted result rows, with titles capped at 512, snippets at 2,048 and publication strings at 64 characters. URLs stay complete; rows with URLs longer than 2,048 characters are omitted. It keeps at most 10 related searches of 128 characters each and a 512-character query label. These limits keep final text below 32 Ki characters (JavaScript UTF-16 code units). Details contain only retained URLs/counts and supported metadata (`id`/`node` capped at 256 characters, plus `ms`/`api_balance`); arbitrary metadata fields are omitted. `resultCount` and `relatedCount` describe retained entries, `originalResultCount` and `originalRelatedCount` describe the API response, and `truncated` plus an output notice identify omitted rows, clipped text or metadata. Fewer than `limit` results may fit. An empty search still reports “No results found”; if all returned rows exceed the output limits, the tool reports that no results were retained. Related-only responses keep the empty-search message with zero retained related entries.
 
 Kagi searches have a 30-second total deadline covering headers and body reads; caller cancellation is immediate. Success and error responses are limited to 1 MiB of streamed bytes, regardless of Content-Length. Timeout errors invite a retry (`TimeoutError`); cancellation uses `AbortError` with a controlled message. HTTP error diagnostics include only the status and a fixed service/access retry hint; upstream error body text is never copied into diagnostics. Transport and body-read failures use bounded categories without upstream messages or causes. Successful responses require valid UTF-8 before JSON admission; malformed bytes publish no search results. HTTP error bodies are cancelled unread, so stalled, oversized or malformed error bodies cannot hide the status.

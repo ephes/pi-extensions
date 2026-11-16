@@ -13,6 +13,8 @@ Keep this file short and actionable.
 
 ## Done
 
+- [x] Admit Kagi query bytes before progress/transport and bound progress query previews.
+
 - [x] Total protocol byte/event admission and explicit late-fetch response body ownership.
 
 - [x] Shared SDK-based external terminal text projection and status-only Kagi HTTP diagnostics.

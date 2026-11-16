@@ -35,6 +35,14 @@ export const KAGI_SEARCH_TIMEOUT_MS = 30_000;
 export const KAGI_LIMIT_MIN = 1;
 export const KAGI_LIMIT_MAX = 20;
 export const KAGI_LIMIT_DEFAULT = 10;
+export const KAGI_QUERY_MAX_BYTES = 8192;
+
+/** Admit submitted UTF-8 bytes before trimming, progress or URL construction. */
+export function admitKagiQuery(query: string): void {
+  if (query.length > KAGI_QUERY_MAX_BYTES || Buffer.byteLength(query, "utf8") > KAGI_QUERY_MAX_BYTES) {
+    throw new Error(`Kagi query exceeds the ${KAGI_QUERY_MAX_BYTES}-byte UTF-8 limit.`);
+  }
+}
 
 /** The single Kagi result-limit policy: round to an integer, then clamp to 1-20; non-finite values use the default. */
 export function normalizeKagiLimit(limit: number | undefined): number {
@@ -132,6 +140,7 @@ export function getKagiApiKey(): string {
 }
 
 export async function searchKagi(query: string, limit?: number, signal?: AbortSignal): Promise<KagiSearchResponse> {
+  admitKagiQuery(query);
   const apiKey = getKagiApiKey();
   const normalizedLimit = normalizeKagiLimit(limit);
   const url = new URL(KAGI_API_URL);

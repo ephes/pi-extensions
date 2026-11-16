@@ -2,7 +2,7 @@ import { displayText } from "../shared/display.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type KagiApiMeta, formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
+import { type KagiApiMeta, admitKagiQuery, formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, KAGI_QUERY_MAX_BYTES, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
 
 const RESULT_TEXT_MAX_CHARS = 24_000;
 const RELATED_MAX_COUNT = 10;
@@ -18,7 +18,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       "When the user needs page text after searching, follow up with web_content on a chosen result URL.",
     ],
     parameters: Type.Object({
-      query: Type.String({ description: "Search query." }),
+      query: Type.String({ description: `Search query (at most ${KAGI_QUERY_MAX_BYTES} UTF-8 bytes before trimming).` }),
       limit: Type.Optional(Type.Number({
         description: `Maximum number of results (${KAGI_LIMIT_MIN}-${KAGI_LIMIT_MAX}, default ${KAGI_LIMIT_DEFAULT}).`,
         minimum: KAGI_LIMIT_MIN,
@@ -27,16 +27,18 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, onUpdate) {
+      admitKagiQuery(params.query);
       const query = params.query.trim();
       if (!query) {
         throw new Error("Query cannot be empty.");
       }
 
       const limit = normalizeKagiLimit(params.limit);
+      const preview = query.length > 512 ? query.slice(0, 511).replace(/[\uD800-\uDBFF]$/, "") + "…" : query;
 
       onUpdate?.({
-        content: [{ type: "text", text: `Searching Kagi for "${query}"...` }],
-        details: { query, limit },
+        content: [{ type: "text", text: `Searching Kagi for "${preview}"...` }],
+        details: { query: preview, limit },
       });
 
       const response = await searchKagi(query, limit, signal);
