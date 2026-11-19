@@ -25,3 +25,12 @@ test("strict JSON admits finite exponent boundaries and refuses numeric overflow
     assert.throws(() => parseUnambiguousJson(text), { message: "Invalid JSON structure." });
   }
 });
+
+test("strict JSON bounds total object members independently of containers", () => {
+  const ordinary = { id: "request", node: "search", ms: 15 };
+  assert.deepEqual(parseUnambiguousJson(JSON.stringify(ordinary), 8, 8, 3), ordinary);
+  assert.throws(() => parseUnambiguousJson('{"a":0,"b":1,"c":2,"d":3}', 8, 8, 3),
+    { message: "Invalid JSON structure." });
+  assert.throws(() => parseUnambiguousJson('[{"a":0,"b":1},{"a":2,"b":3}]', 8, 8, 3),
+    { message: "Invalid JSON structure." });
+});
