@@ -329,6 +329,24 @@ test("registered search preserves complete useful URLs and omits oversized URLs"
   assert.doesNotMatch(result.content[0].text, /Oversized URL/);
 });
 
+test("registered search counts only retained rows toward the result limit", async (t) => {
+  const firstUsable = "https://example.com/first";
+  const laterUsable = "https://example.com/later";
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [
+    { t: 0, url: `https://example.com/${"x".repeat(2048)}`, title: "Oversized URL" },
+    { t: 0, url: firstUsable, title: "First usable result" },
+    { t: 0, url: laterUsable, title: "Later usable result" },
+  ] }));
+  const result = await registeredSearch().execute("test", { query: "query", limit: 1 }, undefined, undefined);
+  assert.deepEqual(result.details.urls, [firstUsable]);
+  assert.equal(result.details.resultCount, 1);
+  assert.equal(result.details.originalResultCount, 3);
+  assert.equal(result.details.truncated, true);
+  assert.ok(result.content[0].text.includes(`1. First usable result\n   URL: ${firstUsable}`));
+  assert.doesNotMatch(result.content[0].text, /Oversized URL|Later usable result/);
+  assert.match(result.content[0].text, /\[Search output truncated\.\]$/);
+});
+
 test("registered search keeps ordinary and empty search output with truthful retained counts", async (t) => {
   let payload: unknown = valid;
   t.mock.method(globalThis, "fetch", async () => Response.json(payload));

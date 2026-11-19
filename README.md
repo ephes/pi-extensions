@@ -115,7 +115,7 @@ Set a Kagi API key for `kagi_search`:
 export KAGI_API_KEY="your-api-key"
 ```
 
-The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default. The tool enforces this count locally even if the API returns extra rows.
+The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default. The tool also caps retained rows at this count. It scans results in API order, skips rows with oversized URLs, and stops when the count is reached or the next usable row exceeds the remaining text budget. Each omitted row contributes to the truncation flag.
 
 Queries accept at most 8,192 UTF-8 bytes, including surrounding whitespace.
 The tool and shared `searchKagi` helper refuse larger inputs before progress or

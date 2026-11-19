@@ -50,7 +50,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       const response = await searchKagi(query, limit, signal);
       const results = response.data.filter((item) => item.t === 0);
       const related = response.data.filter((item) => item.t === 1).flatMap((item) => item.list);
-      let truncated = results.length > limit;
+      let truncated = false;
       const clip = (text: string, max: number) => {
         if (text.length <= max) return text;
         truncated = true;
@@ -74,7 +74,8 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       const lines: string[] = [`# Kagi search: ${retainedQuery}`, ""];
       const urls: string[] = [];
       let remaining = RESULT_TEXT_MAX_CHARS;
-      for (const result of results.slice(0, limit)) {
+      for (const result of results) {
+        if (urls.length === limit) { truncated = true; break; }
         // Preserve complete usable URLs rather than returning broken prefixes.
         if (result.url.length > 2048) { truncated = true; continue; }
         const row = [`${urls.length + 1}. ${clip(result.title, 512)}`, `   URL: ${result.url}`];
