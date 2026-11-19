@@ -21,6 +21,9 @@ export function parseUnambiguousJson(text: string, maxDepth = 128, maxContainers
     },
     onObjectEnd: () => { stack.pop(); },
     onArrayEnd: () => { stack.pop(); },
+    onLiteralValue: value => {
+      if (typeof value === "number" && !Number.isFinite(value)) invalid();
+    },
     onError: invalid,
   }, { disallowComments: true, allowTrailingComma: false, allowEmptyContent: false });
   return JSON.parse(text);

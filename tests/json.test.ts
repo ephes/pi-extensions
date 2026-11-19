@@ -17,3 +17,11 @@ test("strict JSON rejects permissive parser syntax before returning data", () =>
     assert.throws(() => parseUnambiguousJson(text));
   }
 });
+
+test("strict JSON admits finite exponent boundaries and refuses numeric overflow", () => {
+  assert.deepEqual(parseUnambiguousJson('[1.7976931348623157e308,-1.7976931348623157e308,5e-324,-1e-9999,"1e309"]'),
+    [Number.MAX_VALUE, -Number.MAX_VALUE, Number.MIN_VALUE, -0, "1e309"]);
+  for (const text of ['1e309', '{"extra":[-1e309]}']) {
+    assert.throws(() => parseUnambiguousJson(text), { message: "Invalid JSON structure." });
+  }
+});

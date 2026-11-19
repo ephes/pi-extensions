@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refuse JSON numbers that decode to infinity in Kagi responses and agent workflow protocol lines, including ignored fields and events.
 - Clip `web_content` at a Unicode scalar boundary within its UTF-16 output limit and report the actual retained length.
 - Apply the Kagi result limit to retained rows so later usable hits can fill slots left by oversized URLs. Report omitted hits as truncated.
 
