@@ -4,6 +4,7 @@ import net from "node:net";
 import type { LookupFunction } from "node:net";
 import undici, { Agent, type Response } from "undici";
 import { USER_AGENT } from "./http.js";
+import { clipText } from "./text.js";
 
 export interface ReadablePage {
   url: string;
@@ -122,9 +123,8 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         throw new Error(`Could not extract readable content from ${displayUrl(currentUrl.toString())}`);
       }
 
-      const normalizedLimit = maxChars;
-      const outputTruncated = extracted.length > normalizedLimit;
-      const content = outputTruncated ? extracted.slice(0, normalizedLimit) : extracted;
+      const content = clipText(extracted, maxChars);
+      const outputTruncated = content.length < extracted.length;
 
       return {
         url: currentUrl.toString(),

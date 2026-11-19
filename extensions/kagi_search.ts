@@ -1,4 +1,5 @@
 import { displayText } from "../shared/display.js";
+import { clipText } from "../shared/text.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -9,7 +10,7 @@ const RELATED_MAX_COUNT = 10;
 
 /** Shorten to at most `max` UTF-16 code units with an ellipsis, never leaving a lone high surrogate. */
 function shorten(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "") + "…";
+  return text.length <= max ? text : clipText(text, max - 1) + "…";
 }
 
 export default function kagiSearchExtension(pi: ExtensionAPI) {

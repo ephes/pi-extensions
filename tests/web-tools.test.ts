@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import dns from "node:dns/promises";
+import undici from "undici";
 import kagiSearch from "../extensions/kagi_search.js";
 import webContent from "../extensions/web_content.js";
 
@@ -47,6 +48,22 @@ for (const [name, extension, details, success, running] of [
     }
   });
 }
+
+test("web clips readable content at a Unicode scalar boundary", async (t) => {
+  const prefix = "日本語 café ".padEnd(999, "界");
+  t.mock.method(undici, "fetch", async () => new undici.Response(`${prefix}🙂fin`, {
+    headers: { "content-type": "text/plain" },
+  }));
+  const tool = register(webContent);
+  for (const [maxChars, expected] of [[1000, prefix], [1001, `${prefix}🙂`]] as const) {
+    const result = await tool.execute("test", { url: "http://1.1.1.1/", maxChars }, undefined, () => {});
+    assert.equal(result.content[0].text, `# Page content\n\nURL: http://1.1.1.1/\n\n${expected}\n\n[Output truncated to ${expected.length} characters.]`);
+    assert.equal(result.details?.charCount, expected.length);
+    assert.equal(result.details?.truncated, true);
+    assert.equal(result.details?.outputTruncated, true);
+    assert.equal(result.details?.sourceTruncated, false);
+  }
+});
 
 test("web progress and call preview omit credentials, queries and fragments even on failure", async (t) => {
   t.mock.method(dns, "lookup", async () => [{ address: "1.1.1.1", family: 4 }]);

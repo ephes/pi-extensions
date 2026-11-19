@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Clip `web_content` at a Unicode scalar boundary within its UTF-16 output limit and report the actual retained length.
+
 - Emit Kagi publication metadata only as validated UTC calendar dates in years 0000–9999; omit malformed, impossible or unsupported dates instead of echoing provider text or slicing extended years.
 
 - Admit Kagi queries up to 8,192 UTF-8 bytes before trimming, progress or URL construction; bound progress query previews to 512 characters while preserving the full admitted search text for requests. Clipped query labels, titles, snippets, related searches and metadata never end in a split surrogate pair.

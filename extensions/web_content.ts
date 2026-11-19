@@ -42,7 +42,7 @@ export default function webContentExtension(pi: ExtensionAPI) {
       ];
 
       if (page.outputTruncated) {
-        lines.push("", `[Output truncated to ${maxChars} characters.]`);
+        lines.push("", `[Output truncated to ${page.content.length} characters.]`);
       }
       if (page.sourceTruncated) {
         lines.push("", "[Source response exceeded the fetch budget and was truncated before extraction.]");
