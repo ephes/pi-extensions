@@ -1,4 +1,5 @@
 import { displayText } from "../shared/display.js";
+import { clipText } from "../shared/text.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -9,7 +10,7 @@ const RELATED_MAX_COUNT = 10;
 
 /** Shorten to at most `max` UTF-16 code units with an ellipsis, never leaving a lone high surrogate. */
 function shorten(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, "") + "…";
+  return text.length <= max ? text : clipText(text, max - 1) + "…";
 }
 
 export default function kagiSearchExtension(pi: ExtensionAPI) {
@@ -49,7 +50,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       const response = await searchKagi(query, limit, signal);
       const results = response.data.filter((item) => item.t === 0);
       const related = response.data.filter((item) => item.t === 1).flatMap((item) => item.list);
-      let truncated = results.length > limit;
+      let truncated = false;
       const clip = (text: string, max: number) => {
         if (text.length <= max) return text;
         truncated = true;
@@ -73,7 +74,8 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       const lines: string[] = [`# Kagi search: ${retainedQuery}`, ""];
       const urls: string[] = [];
       let remaining = RESULT_TEXT_MAX_CHARS;
-      for (const result of results.slice(0, limit)) {
+      for (const result of results) {
+        if (urls.length === limit) { truncated = true; break; }
         // Preserve complete usable URLs rather than returning broken prefixes.
         if (result.url.length > 2048) { truncated = true; continue; }
         const row = [`${urls.length + 1}. ${clip(result.title, 512)}`, `   URL: ${result.url}`];
