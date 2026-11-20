@@ -2,6 +2,7 @@ import { parseUnambiguousJson } from "./json.js";
 import { USER_AGENT } from "./http.js";
 
 const KAGI_API_URL = "https://kagi.com/api/v0/search";
+const KAGI_DECODE_BATCH_CHARS = 4096;
 
 export interface KagiApiMeta {
   id?: string | null;
@@ -101,28 +102,40 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
   const cancel = () => { void reader.cancel().catch(() => {}); };
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) cancel();
-  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (chunk?: Uint8Array): string => {
+    try { return decoder.decode(chunk, { stream: chunk !== undefined }); }
+    catch { throw new Error("Kagi API response contains invalid UTF-8."); }
+  };
+  const blocks: string[] = [];
+  const fragments: string[] = [];
+  let fragmentChars = 0;
   let size = 0;
   try {
     while (true) {
       const { done, value } = await reader.read().catch(() => {
         throw new Error("Kagi API could not read response; please retry.");
       });
+      signal.throwIfAborted();
       if (done) break;
       size += value.byteLength;
       if (size > KAGI_RESPONSE_MAX_BYTES) {
         throw new Error("Kagi API response exceeds the 1 MiB byte limit.");
       }
-      chunks.push(value);
+      const text = decode(value);
+      if (text.length === 0) continue;
+      fragments.push(text);
+      fragmentChars += text.length;
+      // Consolidate tiny fragments frequently so their count cannot scale with the body.
+      if (fragmentChars >= KAGI_DECODE_BATCH_CHARS) {
+        blocks.push(fragments.join(""));
+        fragments.length = 0;
+        fragmentChars = 0;
+      }
     }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-    catch { throw new Error("Kagi API response contains invalid UTF-8."); }
+    fragments.push(decode());
+    blocks.push(fragments.join(""));
+    return blocks.join("");
   } finally {
     signal.removeEventListener("abort", cancel);
     // Cancellation must not delay the deadline or the byte-limit error.
@@ -187,6 +200,7 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
       throw new Error(`Kagi API request failed with HTTP ${response.status}; check Kagi service status or API access and retry.`);
     }
     const body = await readBody(response, combined);
+    combined.throwIfAborted();
     let payload: unknown;
     try { payload = parseUnambiguousJson(body, 64, 16384, 16384); }
     catch { throw new Error("Kagi API response is not valid JSON."); }

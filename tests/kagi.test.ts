@@ -1,5 +1,7 @@
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import type { ReadableStreamReadResult } from "node:stream/web";
+import { setImmediate } from "node:timers/promises";
 import { formatPublishedDate, normalizeKagiLimit, searchKagi, KAGI_RESPONSE_MAX_BYTES, KAGI_SEARCH_TIMEOUT_MS } from "../shared/kagi.js";
 import { USER_AGENT } from "../shared/http.js";
 import kagiSearchExtension from "../extensions/kagi_search.js";
@@ -101,6 +103,34 @@ test("searchKagi decodes exact-limit multibyte JSON across chunks", async (t) =>
   assert.deepEqual(await searchKagi("query"), valid);
 });
 
+test("searchKagi decodes one-byte fragments incrementally and rejects an incomplete UTF-8 tail", async (t) => {
+  const payload = { ...valid, extra: "a".repeat(5000) + "Grüße 🦊" + "b".repeat(5000) };
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  const decode = TextDecoder.prototype.decode;
+  let streamedBytes = 0;
+  t.mock.method(TextDecoder.prototype, "decode", function(this: TextDecoder, ...args: Parameters<typeof decode>) {
+    if (this.fatal && args[1]?.stream) streamedBytes += args[0]?.byteLength ?? 0;
+    return decode.apply(this, args);
+  });
+  let incompleteTail = false;
+  t.mock.method(globalThis, "fetch", async () => {
+    let offset = 0;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (offset < bytes.length) controller.enqueue(Uint8Array.of(bytes[offset++]));
+        else {
+          if (incompleteTail) controller.enqueue(Uint8Array.of(0xe2, 0x82));
+          controller.close();
+        }
+      },
+    }));
+  });
+  assert.deepEqual(await searchKagi("query"), payload);
+  incompleteTail = true;
+  await assert.rejects(searchKagi("query"), { message: "Kagi API response contains invalid UTF-8." });
+  assert.equal(streamedBytes, 2 * bytes.length + 2);
+});
+
 test("searchKagi total deadline covers stalled headers and body", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let body = false;
@@ -122,6 +152,62 @@ test("searchKagi total deadline covers stalled headers and body", async (t) => {
   }
   assert.equal(cancelled, true);
 });
+
+for (const stop of ["caller cancellation", "deadline", "reader release"] as const) {
+  test(`searchKagi skips JSON validation on ${stop}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const caller = new AbortController();
+    const body = '{"data":[],"extra":"cancelled body"}';
+    const bytes = new TextEncoder().encode(body);
+    let markReading!: () => void;
+    const reading = new Promise<void>((resolve) => { markReading = resolve; });
+    let finishRead!: (result: ReadableStreamReadResult<Uint8Array>) => void;
+    const lateRead = new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => { finishRead = resolve; });
+    const eof = { done: true, value: undefined } as const;
+    let reads = 0;
+    let released = false;
+    const reader = {
+      async read() {
+        ++reads;
+        if (reads === 1) {
+          return { done: false, value: stop === "deadline" ? bytes.subarray(0, 1) : bytes };
+        }
+        if (reads !== 2 || stop === "reader release") return eof;
+        markReading();
+        return lateRead;
+      },
+      async cancel() {
+        finishRead(stop === "deadline" ? { done: false, value: bytes.subarray(1) } : eof);
+      },
+      releaseLock() {
+        released = true;
+        if (stop === "reader release") caller.abort();
+      },
+    };
+    t.mock.method(globalThis, "fetch", async () => ({ ok: true, body: { getReader: () => reader } }));
+    const parse = JSON.parse;
+    let parses = 0;
+    t.mock.method(JSON, "parse", (...args: Parameters<typeof parse>) => {
+      if (args[0] === body) ++parses;
+      return parse(...args);
+    });
+
+    const rejection = assert.rejects(searchKagi("query", undefined, caller.signal), stop === "deadline"
+      ? { name: "TimeoutError", message: "Kagi search timed out after 30 seconds. Please retry." }
+      : { name: "AbortError", message: "Kagi search cancelled." });
+    if (stop !== "reader release") {
+      await reading;
+      if (stop === "deadline") t.mock.timers.tick(KAGI_SEARCH_TIMEOUT_MS);
+      else caller.abort();
+    }
+    await rejection;
+    // Let the abandoned request run any continuations after the public race settles.
+    await setImmediate();
+    assert.equal(parses, 0);
+    assert.equal(reads, 2);
+    assert.equal(released, true);
+  });
+}
 
 test("searchKagi caller cancellation is immediate and success clears deadline", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });

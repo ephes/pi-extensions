@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stop late Kagi body reads after cancellation or deadline expiry and skip JSON validation for cancelled responses.
+- Decode Kagi responses as they stream and consolidate tiny text fragments to reduce memory use.
 - Require HTTP 200 without Content-Range for readable web fetches and cancel refused response bodies unread.
 - Keep readable content free of replacement characters caused by cutting a UTF-8 character at the source-byte limit.
 - Limit JSON object members during parsing to 16,384 per Kagi response and 65,536 per agent workflow protocol line.
