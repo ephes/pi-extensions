@@ -101,6 +101,34 @@ test("searchKagi decodes exact-limit multibyte JSON across chunks", async (t) =>
   assert.deepEqual(await searchKagi("query"), valid);
 });
 
+test("searchKagi decodes one-byte fragments incrementally and rejects an incomplete UTF-8 tail", async (t) => {
+  const payload = { ...valid, extra: "a".repeat(5000) + "Grüße 🦊" + "b".repeat(5000) };
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  const decode = TextDecoder.prototype.decode;
+  let streamedBytes = 0;
+  t.mock.method(TextDecoder.prototype, "decode", function(this: TextDecoder, ...args: Parameters<typeof decode>) {
+    if (this.fatal && args[1]?.stream) streamedBytes += args[0]?.byteLength ?? 0;
+    return decode.apply(this, args);
+  });
+  let incompleteTail = false;
+  t.mock.method(globalThis, "fetch", async () => {
+    let offset = 0;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (offset < bytes.length) controller.enqueue(Uint8Array.of(bytes[offset++]));
+        else {
+          if (incompleteTail) controller.enqueue(Uint8Array.of(0xe2, 0x82));
+          controller.close();
+        }
+      },
+    }));
+  });
+  assert.deepEqual(await searchKagi("query"), payload);
+  incompleteTail = true;
+  await assert.rejects(searchKagi("query"), { message: "Kagi API response contains invalid UTF-8." });
+  assert.equal(streamedBytes, 2 * bytes.length + 2);
+});
+
 test("searchKagi total deadline covers stalled headers and body", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let body = false;
