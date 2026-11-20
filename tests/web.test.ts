@@ -399,6 +399,46 @@ test("malformed HTML references remain safe", () => {
   assert.equal(decodeHtml("&#x110000; &#xD800; &#0;"), "� � �");
 });
 
+for (const { status, range } of [
+  { status: 200 },
+  { status: 206 },
+  { status: 200, range: "bytes 0-3/12" },
+  { status: 200, range: "" },
+  { status: 203 },
+]) {
+  test(`readable representation admission for HTTP ${status}, Content-Range ${JSON.stringify(range)}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const headers = new undici.Headers({ "content-type": "text/plain" });
+    if (range !== undefined) headers.set("content-range", range);
+    let reads = 0;
+    let cancellations = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads++;
+        controller.enqueue(new TextEncoder().encode("page"));
+        controller.close();
+      },
+      cancel() { cancellations++; },
+    }, { highWaterMark: 0 });
+    t.mock.method(undici, "fetch", async (...args: Parameters<typeof undici.fetch>) => {
+      const [, options] = args;
+      assert.equal(new undici.Headers(options?.headers).has("range"), false);
+      return new undici.Response(body, { status, headers });
+    });
+
+    const page = fetchReadablePage("http://public.example/");
+    if (status === 200 && range === undefined) {
+      assert.equal((await page).content, "page");
+      assert.equal(reads, 1);
+      assert.equal(cancellations, 0);
+    } else {
+      await assert.rejects(page, { message: "Expected a complete HTTP 200 response without Content-Range." });
+      assert.equal(reads, 0);
+      assert.equal(cancellations, 1);
+    }
+  });
+}
+
 for (const contentType of ["text/html", "application/xhtml+xml; charset=UTF-8", "TEXT/HTML; charset=utf-8", undefined]) {
   test(`fetch extracts HTML for Content-Type ${contentType ?? "absent"}`, async (t) => {
     t.mock.method(dns, "lookup", async () => approved);
@@ -513,6 +553,42 @@ for (const size of [2 * 1024 * 1024 - 1, 2 * 1024 * 1024, 2 * 1024 * 1024 + 1]) 
     assert.equal(page.outputTruncated, true);
     assert.equal(page.truncated, true);
     assert.equal(page.content, body.slice(0, 40000));
+  });
+}
+
+for (const { ending, expected, sourceTruncated } of [
+  { ending: "complete", expected: "Prefix🙂", sourceTruncated: false },
+  { ending: "cutoff", expected: "Prefix", sourceTruncated: true },
+  { ending: "incomplete at EOF", expected: "Prefix�", sourceTruncated: false },
+]) {
+  test(`readable UTF-8 with ${ending}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode("Prefix");
+    const scalar = encoder.encode("🙂");
+    const firstHalf = scalar.subarray(0, 2);
+    const fillerBytes = 2 * 1024 * 1024 - prefix.length - firstHalf.length;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (ending !== "complete") {
+          // Discard the padding during HTML extraction so the output cap cannot hide the last character.
+          controller.enqueue(encoder.encode(`<!--${"x".repeat(fillerBytes - 7)}-->`));
+        }
+        controller.enqueue(prefix);
+        controller.enqueue(firstHalf);
+        if (ending !== "incomplete at EOF") controller.enqueue(scalar.subarray(2));
+        controller.close();
+      },
+    });
+    t.mock.method(undici, "fetch", async () => new undici.Response(body, {
+      headers: { "content-type": "text/html" },
+    }));
+
+    const page = await fetchReadablePage("http://public.example/");
+    assert.equal(page.content, expected);
+    assert.equal(page.sourceTruncated, sourceTruncated);
+    assert.equal(page.outputTruncated, false);
+    assert.equal(page.truncated, sourceTruncated);
   });
 }
 
