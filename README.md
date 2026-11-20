@@ -143,6 +143,8 @@ Kagi searches have a 30-second total deadline covering headers and body reads; c
 Successful Kagi bodies are decoded as they stream. The decoder preserves UTF-8
 characters split across reads and rejects incomplete sequences at EOF. Small
 decoded fragments are consolidated during reading to limit buffering overhead.
+Cancellation or deadline expiry stops late body reads before further decoding
+and prevents the cancelled response from reaching JSON validation.
 
 All three extensions project external terminal text through Pi TUI’s public `stripTerminalSequences` and `replaceControlCharacters` helpers before application styling or Markdown rendering. Remote titles/snippets, call previews and delegate labels, diagnostics, tool arguments and answers cannot supply terminal controls. Visible Unicode, tabs and line breaks are preserved; tool content and structured details retain their original values.
 

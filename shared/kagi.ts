@@ -116,6 +116,7 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
       const { done, value } = await reader.read().catch(() => {
         throw new Error("Kagi API could not read response; please retry.");
       });
+      signal.throwIfAborted();
       if (done) break;
       size += value.byteLength;
       if (size > KAGI_RESPONSE_MAX_BYTES) {
@@ -199,6 +200,7 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
       throw new Error(`Kagi API request failed with HTTP ${response.status}; check Kagi service status or API access and retry.`);
     }
     const body = await readBody(response, combined);
+    combined.throwIfAborted();
     let payload: unknown;
     try { payload = parseUnambiguousJson(body, 64, 16384, 16384); }
     catch { throw new Error("Kagi API response is not valid JSON."); }
