@@ -176,8 +176,10 @@ for (const stop of ["caller cancellation", "deadline", "reader release"] as cons
         markReading();
         return lateRead;
       },
-      async cancel() {
+      cancel() {
         finishRead(stop === "deadline" ? { done: false, value: bytes.subarray(1) } : eof);
+        if (stop === "caller cancellation") throw new Error("private cancellation failure");
+        return Promise.resolve();
       },
       releaseLock() {
         released = true;
@@ -543,6 +545,47 @@ for (const phase of ["fetch", "reader"] as const) {
         return true;
       });
     }
+  });
+}
+
+for (const cleanup of ["cancel throws", "cancel rejects", "release throws after EOF"] as const) {
+  test(`searchKagi preserves the read outcome when ${cleanup}`, async (t) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(valid));
+    let reads = 0;
+    let cancellations = 0;
+    let releases = 0;
+    const reader = {
+      async read() {
+        if (cleanup !== "release throws after EOF") throw new Error("private read failure");
+        if (++reads === 1) return { done: false, value: bytes };
+        return { done: true, value: undefined };
+      },
+      cancel() {
+        ++cancellations;
+        if (cleanup === "cancel throws") throw new Error("private cancellation failure");
+        return Promise.reject(new Error("private cancellation rejection"));
+      },
+      releaseLock() {
+        ++releases;
+        throw new Error("private release failure");
+      },
+    };
+    t.mock.method(globalThis, "fetch", async () => ({
+      ok: true, status: 200, headers: new Headers(), body: { getReader: () => reader },
+    }));
+
+    if (cleanup === "release throws after EOF") {
+      assert.deepEqual(await searchKagi("query"), valid);
+    } else {
+      await assert.rejects(searchKagi("query"), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, "Kagi API could not read response; please retry.");
+        assert.equal(error.cause, undefined);
+        return true;
+      });
+    }
+    assert.equal(cancellations, 1);
+    assert.equal(releases, 1);
   });
 }
 
