@@ -184,7 +184,7 @@ for (const stop of ["caller cancellation", "deadline", "reader release"] as cons
         if (stop === "reader release") caller.abort();
       },
     };
-    t.mock.method(globalThis, "fetch", async () => ({ ok: true, body: { getReader: () => reader } }));
+    t.mock.method(globalThis, "fetch", async () => ({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => reader } }));
     const parse = JSON.parse;
     let parses = 0;
     t.mock.method(JSON, "parse", (...args: Parameters<typeof parse>) => {
@@ -276,6 +276,39 @@ function registeredSearch() {
   let tool!: SearchTool;
   kagiSearchExtension({ registerTool(definition: SearchTool) { tool = definition; } } as never);
   return tool;
+}
+
+for (const [status, headers] of [
+  [206, {}],
+  [203, {}],
+  [200, { "Content-Range": "bytes 0-99/200" }],
+] as const) {
+  test(`registered search requires a complete Kagi response (HTTP ${status})`, async (t) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(valid));
+    let pulls = 0;
+    let cancellations = 0;
+    const refused = new Response(new ReadableStream({
+      pull(controller) {
+        ++pulls;
+        controller.enqueue(bytes);
+        controller.close();
+      },
+      cancel() { ++cancellations; },
+    }, { highWaterMark: 0 }), { status, headers: new Headers(headers) });
+    const fetch = t.mock.method(globalThis, "fetch", async () => refused);
+    const tool = registeredSearch();
+
+    await assert.rejects(tool.execute("test", { query: "query" }, undefined, undefined), {
+      message: "Kagi API expected a complete HTTP 200 response without Content-Range.",
+    });
+    assert.equal(pulls, 0);
+    assert.equal(cancellations, 1);
+
+    fetch.mock.mockImplementation(async () => Response.json(valid));
+    const result = await tool.execute("test", { query: "query" }, undefined, undefined);
+    assert.equal(result.details.resultCount, 1);
+    assert.deepEqual(result.details.urls, ["https://example.com"]);
+  });
 }
 
 test("registered search omits untrustworthy Published metadata without losing useful results", async (t) => {

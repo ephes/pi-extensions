@@ -94,6 +94,10 @@ function validateResponse(value: unknown): KagiSearchResponse {
   return value as unknown as KagiSearchResponse;
 }
 
+function cancelResponseBody(response: Response): void {
+  try { void response.body?.cancel().catch(() => {}); } catch { /* best-effort cleanup */ }
+}
+
 async function readBody(response: Response, signal: AbortSignal): Promise<string> {
   if (!response.body) return "";
   let reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -196,8 +200,12 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
     }
     if (!response.ok) {
       // Error bodies are never used as evidence; release them without reading.
-      try { void response.body?.cancel().catch(() => {}); } catch { /* locked or disturbed body */ }
+      cancelResponseBody(response);
       throw new Error(`Kagi API request failed with HTTP ${response.status}; check Kagi service status or API access and retry.`);
+    }
+    if (response.status !== 200 || response.headers.has("content-range")) {
+      cancelResponseBody(response);
+      throw new Error("Kagi API expected a complete HTTP 200 response without Content-Range.");
     }
     const body = await readBody(response, combined);
     combined.throwIfAborted();
