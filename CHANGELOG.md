@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Require HTTP 200 without Content-Range for readable web fetches and cancel refused response bodies unread.
+- Keep readable content free of replacement characters caused by cutting a UTF-8 character at the source-byte limit.
 
 - Limit JSON object members during parsing to 16,384 per Kagi response and 65,536 per agent workflow protocol line.
 - Refuse JSON numbers that decode to infinity in Kagi responses and agent workflow protocol lines, including ignored fields and events.

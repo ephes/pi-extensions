@@ -556,6 +556,42 @@ for (const size of [2 * 1024 * 1024 - 1, 2 * 1024 * 1024, 2 * 1024 * 1024 + 1]) 
   });
 }
 
+for (const { ending, expected, sourceTruncated } of [
+  { ending: "complete", expected: "Prefix🙂", sourceTruncated: false },
+  { ending: "cutoff", expected: "Prefix", sourceTruncated: true },
+  { ending: "incomplete at EOF", expected: "Prefix�", sourceTruncated: false },
+]) {
+  test(`readable UTF-8 with ${ending}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode("Prefix");
+    const scalar = encoder.encode("🙂");
+    const firstHalf = scalar.subarray(0, 2);
+    const fillerBytes = 2 * 1024 * 1024 - prefix.length - firstHalf.length;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (ending !== "complete") {
+          // Discard the padding during HTML extraction so the output cap cannot hide the last character.
+          controller.enqueue(encoder.encode(`<!--${"x".repeat(fillerBytes - 7)}-->`));
+        }
+        controller.enqueue(prefix);
+        controller.enqueue(firstHalf);
+        if (ending !== "incomplete at EOF") controller.enqueue(scalar.subarray(2));
+        controller.close();
+      },
+    });
+    t.mock.method(undici, "fetch", async () => new undici.Response(body, {
+      headers: { "content-type": "text/html" },
+    }));
+
+    const page = await fetchReadablePage("http://public.example/");
+    assert.equal(page.content, expected);
+    assert.equal(page.sourceTruncated, sourceTruncated);
+    assert.equal(page.outputTruncated, false);
+    assert.equal(page.truncated, sourceTruncated);
+  });
+}
+
 for (const cancel of [false, true]) {
   test(`post-cap EOF probe remains bounded (caller cancel=${cancel})`, async (t) => {
     t.mock.method(dns, "lookup", async () => approved);

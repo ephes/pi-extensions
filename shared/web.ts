@@ -328,6 +328,7 @@ async function readResponseTextWithLimit(response: Response, maxBytes: number, s
       const { done, value } = await withAbort(reader.read(), signal);
       if (done) {
         fullyRead = true;
+        text += decoder.decode();
         break;
       }
       if (!value || value.byteLength === 0) {
@@ -351,7 +352,6 @@ async function readResponseTextWithLimit(response: Response, maxBytes: number, s
       bytesRead += value.byteLength;
     }
   } finally {
-    text += decoder.decode();
     try {
       if (!fullyRead) {
         void reader.cancel().catch(() => {});
