@@ -94,12 +94,16 @@ function validateResponse(value: unknown): KagiSearchResponse {
   return value as unknown as KagiSearchResponse;
 }
 
+function cancelBody(body: { cancel(): Promise<void> } | null): void {
+  try { void body?.cancel().catch(() => {}); } catch { /* best-effort cleanup */ }
+}
+
 async function readBody(response: Response, signal: AbortSignal): Promise<string> {
   if (!response.body) return "";
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try { reader = response.body.getReader(); }
   catch { throw new Error("Kagi API could not read response; please retry."); }
-  const cancel = () => { void reader.cancel().catch(() => {}); };
+  const cancel = () => cancelBody(reader);
   signal.addEventListener("abort", cancel, { once: true });
   if (signal.aborted) cancel();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -139,8 +143,8 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
   } finally {
     signal.removeEventListener("abort", cancel);
     // Cancellation must not delay the deadline or the byte-limit error.
-    void reader.cancel().catch(() => {});
-    reader.releaseLock();
+    cancel();
+    try { reader.releaseLock(); } catch { /* preserve the read outcome */ }
   }
 }
 
@@ -191,13 +195,17 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
     });
     // A non-cooperative transport may deliver headers after cancellation.
     if (combined.aborted) {
-      void response.body?.cancel().catch(() => {});
+      cancelBody(response.body);
       combined.throwIfAborted();
     }
     if (!response.ok) {
       // Error bodies are never used as evidence; release them without reading.
-      try { void response.body?.cancel().catch(() => {}); } catch { /* locked or disturbed body */ }
+      cancelBody(response.body);
       throw new Error(`Kagi API request failed with HTTP ${response.status}; check Kagi service status or API access and retry.`);
+    }
+    if (response.status !== 200 || response.headers.has("content-range")) {
+      cancelBody(response.body);
+      throw new Error("Kagi API expected a complete HTTP 200 response without Content-Range.");
     }
     const body = await readBody(response, combined);
     combined.throwIfAborted();

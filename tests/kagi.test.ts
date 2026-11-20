@@ -176,15 +176,17 @@ for (const stop of ["caller cancellation", "deadline", "reader release"] as cons
         markReading();
         return lateRead;
       },
-      async cancel() {
+      cancel() {
         finishRead(stop === "deadline" ? { done: false, value: bytes.subarray(1) } : eof);
+        if (stop === "caller cancellation") throw new Error("private cancellation failure");
+        return Promise.resolve();
       },
       releaseLock() {
         released = true;
         if (stop === "reader release") caller.abort();
       },
     };
-    t.mock.method(globalThis, "fetch", async () => ({ ok: true, body: { getReader: () => reader } }));
+    t.mock.method(globalThis, "fetch", async () => ({ ok: true, status: 200, headers: new Headers(), body: { getReader: () => reader } }));
     const parse = JSON.parse;
     let parses = 0;
     t.mock.method(JSON, "parse", (...args: Parameters<typeof parse>) => {
@@ -276,6 +278,39 @@ function registeredSearch() {
   let tool!: SearchTool;
   kagiSearchExtension({ registerTool(definition: SearchTool) { tool = definition; } } as never);
   return tool;
+}
+
+for (const [status, headers] of [
+  [206, {}],
+  [203, {}],
+  [200, { "Content-Range": "bytes 0-99/200" }],
+] as const) {
+  test(`registered search requires a complete Kagi response (HTTP ${status})`, async (t) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(valid));
+    let pulls = 0;
+    let cancellations = 0;
+    const refused = new Response(new ReadableStream({
+      pull(controller) {
+        ++pulls;
+        controller.enqueue(bytes);
+        controller.close();
+      },
+      cancel() { ++cancellations; },
+    }, { highWaterMark: 0 }), { status, headers: new Headers(headers) });
+    const fetch = t.mock.method(globalThis, "fetch", async () => refused);
+    const tool = registeredSearch();
+
+    await assert.rejects(tool.execute("test", { query: "query" }, undefined, undefined), {
+      message: "Kagi API expected a complete HTTP 200 response without Content-Range.",
+    });
+    assert.equal(pulls, 0);
+    assert.equal(cancellations, 1);
+
+    fetch.mock.mockImplementation(async () => Response.json(valid));
+    const result = await tool.execute("test", { query: "query" }, undefined, undefined);
+    assert.equal(result.details.resultCount, 1);
+    assert.deepEqual(result.details.urls, ["https://example.com"]);
+  });
 }
 
 test("registered search omits untrustworthy Published metadata without losing useful results", async (t) => {
@@ -510,6 +545,47 @@ for (const phase of ["fetch", "reader"] as const) {
         return true;
       });
     }
+  });
+}
+
+for (const cleanup of ["cancel throws", "cancel rejects", "release throws after EOF"] as const) {
+  test(`searchKagi preserves the read outcome when ${cleanup}`, async (t) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(valid));
+    let reads = 0;
+    let cancellations = 0;
+    let releases = 0;
+    const reader = {
+      async read() {
+        if (cleanup !== "release throws after EOF") throw new Error("private read failure");
+        if (++reads === 1) return { done: false, value: bytes };
+        return { done: true, value: undefined };
+      },
+      cancel() {
+        ++cancellations;
+        if (cleanup === "cancel throws") throw new Error("private cancellation failure");
+        return Promise.reject(new Error("private cancellation rejection"));
+      },
+      releaseLock() {
+        ++releases;
+        throw new Error("private release failure");
+      },
+    };
+    t.mock.method(globalThis, "fetch", async () => ({
+      ok: true, status: 200, headers: new Headers(), body: { getReader: () => reader },
+    }));
+
+    if (cleanup === "release throws after EOF") {
+      assert.deepEqual(await searchKagi("query"), valid);
+    } else {
+      await assert.rejects(searchKagi("query"), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, "Kagi API could not read response; please retry.");
+        assert.equal(error.cause, undefined);
+        return true;
+      });
+    }
+    assert.equal(cancellations, 1);
+    assert.equal(releases, 1);
   });
 }
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve Kagi search outcomes when body cancellation or reader release fails.
+- Require HTTP 200 without Content-Range for Kagi searches and cancel refused response bodies unread.
 - Stop late Kagi body reads after cancellation or deadline expiry and skip JSON validation for cancelled responses.
 - Decode Kagi responses as they stream and consolidate tiny text fragments to reduce memory use.
 - Require HTTP 200 without Content-Range for readable web fetches and cancel refused response bodies unread.
