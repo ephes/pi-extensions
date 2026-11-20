@@ -104,6 +104,11 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         throw new Error(`Failed to fetch ${displayUrl(currentUrl.toString())} (HTTP ${response.status})`);
       }
 
+      if (response.status !== 200 || response.headers.has("content-range")) {
+        void response.body?.cancel().catch(() => {});
+        throw new Error("Expected a complete HTTP 200 response without Content-Range.");
+      }
+
       // Preserve legacy HTML extraction when the server omits Content-Type.
       const contentType = response.headers.get("content-type");
       const mediaType = contentType === null ? "text/html" : contentType.split(";", 1)[0].trim().toLowerCase();
