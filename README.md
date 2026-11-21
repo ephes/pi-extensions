@@ -83,11 +83,11 @@ inventory with the fixed directory failure diagnostic.
 Bundled agent frontmatter uses these model IDs:
 
 - `implementer` — `openai/gpt-5.4`
-- `reviewer` — `openai-codex/gpt-6.1-sol` (required)
+- `reviewer` — `openai-codex/gpt-6.2-sol` (required)
 
 The bundled `reviewer` requires the exact provider-qualified model above in its
 frontmatter and Pi's authenticated model list. Authenticate `openai-codex` via
-`/login` and ensure `gpt-6.1-sol` is available before using `/review` or a chain
+`/login` and ensure `gpt-6.2-sol` is available before using `/review` or a chain
 containing the reviewer. Missing, bare or different configured models, and an
 unavailable approved model, fail before review prompt files or children are
 created. Chains and parallel batches containing the reviewer are refused as a
@@ -274,6 +274,7 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - If a fetch ignores cancellation and delivers a response after caller cancellation or the deadline, its late body is cancelled once through the public body API. Body cancellation throws/rejections are observed without changing the primary abort/deadline error or exposing response evidence.
 - Each web dispatcher is destroyed through Undici's public API after its hop. Cleanup waits at most 100 ms and stops waiting immediately on caller cancellation or deadline expiry. Either event prevents returning a successful page. Existing fetch or body-read failures retain their original diagnostics. Cleanup errors preserve the fetch outcome, and late rejections are observed without logging private transport errors.
 - `agent_workflow` discovers bundled agent definitions from `agents/` relative to the installed package path, so it works for `pi install <path>` and packaged installs.
+- Agent workflow calls must select exactly one mode: a single agent and task, a parallel batch, or a chain. Missing or mixed modes return `isError: true` with empty results before prompts are created or delegates launch.
 - Agent workflow subprocesses run with `--no-extensions`, `--no-prompt-templates`, and `--no-skills` to reduce recursion risk and keep delegated runs focused on bundled agent behavior.
 - Parallel workflows admit at most 8 tasks in the schema and at runtime. Excess tasks return one fixed error with empty results before definition discovery or input preparation. Chain workflows admit at most 32 steps before prompt preparation or process launch; excess steps return an error verdict. Submitted workflows admit at most 1 MiB of UTF-8 task text per task and 4 MiB total before any prompt files or children are created. The total includes each invocation’s system prompt, agent label and working-directory label. Chain handoff text has its separate allowance below; it does not consume the submitted-input budget. Rejected workflows return a fixed diagnostic without echoing inputs.
   Submitted task text, agent names and working-directory labels must be valid Unicode text. An unpaired surrogate in any submitted item rejects the whole workflow before prompt files or children are created. Supplementary characters such as emoji are preserved.

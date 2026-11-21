@@ -22,7 +22,7 @@ test("discoverBundledAgents finds bundled implementer and reviewer definitions",
 
   const reviewer = discovery.agents.find((agent) => agent.name === "reviewer");
   assert.ok(reviewer, "reviewer agent should exist");
-  assert.equal(reviewer?.model, "openai-codex/gpt-6.1-sol");
+  assert.equal(reviewer?.model, "openai-codex/gpt-6.2-sol");
   assert.deepEqual(reviewer?.tools, ["read", "grep", "find", "ls", "bash"]);
   assert.match(reviewer?.systemPrompt ?? "", /read-only/);
 });

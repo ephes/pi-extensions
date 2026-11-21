@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Return a tool error for missing or mixed agent workflow modes before creating prompts or launching delegates.
 - Size bundled definition read buffers to the admitted file length and remaining discovery budget, with one extra byte to detect growth or overflow.
 - Preserve the bundled definition discovery limit refusal if closing a file or directory also fails, discarding the entire inventory.
 
@@ -30,7 +31,7 @@
 
 - Admit Kagi queries up to 8,192 UTF-8 bytes before trimming, progress or URL construction; bound progress query previews to 512 characters while preserving the full admitted search text for requests. Clipped query labels, titles, snippets, related searches and metadata never end in a split surrogate pair.
 
-- Pin the bundled reviewer to authenticated `openai-codex/gpt-6.1-sol` and refuse missing, unapproved or unavailable review models before prompt creation/launch, including whole chains and parallel batches that contain the reviewer; preserve generic implementer fallback.
+- Pin the bundled reviewer to authenticated `openai-codex/gpt-6.2-sol` and refuse missing, unapproved or unavailable review models before prompt creation/launch, including whole chains and parallel batches that contain the reviewer; preserve generic implementer fallback.
 
 - Reject agent definitions changed during reading using descriptor generation, consumed length and final named identity, while preserving stable intentional links and discovery budgets.
 

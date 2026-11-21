@@ -53,16 +53,16 @@ function setup(t: TestContext) {
     ? { chain: [{ agent: "implementer", task: "first" }, { agent: "reviewer", task }] }
     : parallel ? { tasks: Array.from({ length: 8 }, (_, i) => ({ agent: "implementer", task: `task-${i}` })) }
     : { agent: "implementer", task: "test" }, signal, update, {
-      cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
+      cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.2-sol" }] },
     } as never);
   const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
   const render = (result: StubResult, expanded: boolean) =>
     tool.renderResult(result, { expanded, isPartial: false }, plainTheme).render(200).map((line) => line.trimEnd()).join("\n");
   const executeChain = (chain: Array<{ agent: string; task: string }>, update?: (result: StubResult) => void) => tool.execute("test", { chain }, undefined, update, {
-    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.2-sol" }] },
   });
   const executeParams = (params: unknown) => tool.execute("test", params, undefined, undefined, {
-    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.1-sol" }] },
+    cwd: process.cwd(), modelRegistry: { getAvailable: () => [{ provider: "openai", id: "gpt-5.4" }, { provider: "openai-codex", id: "gpt-6.2-sol" }] },
   });
   return { children, execute, executeChain, executeParams, render, tasks, spawnOptions, spawnArgs };
 }
