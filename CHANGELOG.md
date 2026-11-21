@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Size bundled definition read buffers to the admitted file length and remaining discovery budget, with one extra byte to detect growth or overflow.
+
 - Reject Kagi queries with unpaired surrogates before progress or request URL construction.
 - Refuse unpaired surrogates in decoded JSON member names and string values in Kagi responses and agent workflow protocol lines.
 - Reject already cancelled web fetches with the original abort reason before starting the deadline.

@@ -38,7 +38,8 @@ function readDefinition(filePath: string, remainingBytes: number, charge: (bytes
   try {
     const stat = fs.fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.size > MAX_DEFINITION_BYTES) throw new Error("Invalid definition file.");
-    const bytes = Buffer.alloc(Math.min(MAX_DEFINITION_BYTES, remainingBytes) + 1);
+    // One extra byte detects growth or exhaustion of the shared read budget.
+    const bytes = Buffer.alloc(Math.min(Number(stat.size), remainingBytes) + 1);
     let used = 0;
     while (used < bytes.length) {
       const read = fs.readSync(fd, bytes, used, bytes.length - used, null);
@@ -53,9 +54,8 @@ function readDefinition(filePath: string, remainingBytes: number, charge: (bytes
       }
       charge(read);
       used += read;
-      if (used > MAX_DEFINITION_BYTES) break;
     }
-    throw new Error("Definition exceeds byte limit.");
+    throw new Error("Definition grew while reading.");
   } finally {
     fs.closeSync(fd);
   }

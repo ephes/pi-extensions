@@ -243,12 +243,17 @@ test("wide discovery refuses the entire generation after 256 directory entries",
   assert.throws(() => directories[0].readSync(), { code: "ERR_DIR_CLOSED" });
 });
 
-test("256 small definitions are admitted and directory descriptors close on success", (t) => {
-  const { directories } = fixtureDiscovery(t, Object.fromEntries(Array.from({ length: 256 }, (_, i) =>
-    [`${i}.md`, definition(`name: agent-${i}\ndescription: synthetic`)])));
+test("256 small definitions use size-based allocations and close the directory on success", (t) => {
+  const files = Object.fromEntries(Array.from({ length: 256 }, (_, i) =>
+    [`${i}.md`, definition(`name: agent-${i}\ndescription: synthetic`)]));
+  const { directories } = fixtureDiscovery(t, files);
+  const allocate = t.mock.method(Buffer, "alloc", Buffer.alloc);
   const discovery = discoverBundledAgents();
   assert.equal(discovery.agents.length, 256);
   assert.deepEqual(discovery.diagnostics, []);
+  const allocated = allocate.mock.calls.reduce((sum, call) => sum + Number(call.arguments[0]), 0);
+  const expected = Object.values(files).reduce((sum, content) => sum + Buffer.byteLength(content) + 1, 0);
+  assert.equal(allocated, expected);
   assert.equal(directories.length, 1);
   assert.throws(() => directories[0].readSync(), { code: "ERR_DIR_CLOSED" });
 });
@@ -319,13 +324,15 @@ for (const mutation of ["rewrite", "truncate", "append", "replace", "retarget-li
     let changingFd = -1;
     t.mock.method(fs, "openSync", (file: string, flags: number) => {
       const fd = open(file, flags);
-      if (path.basename(file) === "changing.md") changingFd = fd;
+      changingFd = path.basename(file) === "changing.md" ? fd : -1;
       return fd;
     });
     const read = fs.readSync;
     let changed = false;
+    let changingBytes = 0;
     t.mock.method(fs, "readSync", (fd: number, bytes: Buffer, offset: number, length: number, position: null) => {
       const consumed = read(fd, bytes, offset, fd === changingFd ? Math.min(length, original.indexOf("Private prompt")) : length, position);
+      if (fd === changingFd) changingBytes += consumed;
       if (fd === changingFd && consumed > 0 && !changed) {
         changed = true;
         if (mutation === "replace") {
@@ -349,6 +356,7 @@ for (const mutation of ["rewrite", "truncate", "append", "replace", "retarget-li
     syncBuiltinESMExports();
     const discovery = discoverBundledAgents();
     assert.equal(changed, true);
+    if (mutation === "append") assert.equal(changingBytes, Buffer.byteLength(original) + 1);
     assert.deepEqual(discovery.agents.map(agent => agent.name), ["valid"]);
     assert.deepEqual(discovery.diagnostics, ["Invalid bundled agent definition: changing.md"]);
     assert.equal(close.mock.callCount(), 2);

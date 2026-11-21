@@ -61,9 +61,10 @@ Definitions are accepted only when consumed length and descriptor identity, size
 mtime and ctime remain unchanged across the read and a final pathname check
 still resolves to that generation. In-place edits, truncation and replacement
 (including symlink retargeting) are isolated as invalid definitions.
-Definitions must resolve to regular files of at most 256 KiB, including bytes
-added while reading. Symlinks to regular files remain supported, including
-targets outside `agents/`; directories, devices and FIFOs are refused through
+Definitions must resolve to regular files of at most 256 KiB. Each read buffer
+is sized to the opened file length or remaining discovery byte budget, whichever
+is smaller, plus one byte to detect growth or overflow. Symlinks to regular files
+remain supported, including targets outside `agents/`. Directories, devices and FIFOs are refused through
 the opened descriptor. Opening uses nonblocking mode so a FIFO target cannot
 stall discovery. Each invalid file gets the same filename-only warning and does
 not hide other valid agents within an admitted discovery generation.
