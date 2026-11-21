@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Count every Kagi related-search term while collecting only the retained prefix.
+- Preserve complete Unicode characters when clipping `web_content` terminal previews.
 
 - Return a tool error for missing or mixed agent workflow modes before creating prompts or launching delegates.
 - Size bundled definition read buffers to the admitted file length and remaining discovery budget, with one extra byte to detect growth or overflow.

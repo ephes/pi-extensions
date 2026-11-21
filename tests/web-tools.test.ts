@@ -49,6 +49,34 @@ for (const [name, extension, details, success, running] of [
   });
 }
 
+for (const [label, isError, expanded, limit] of [
+  ["collapsed error", true, false, 160],
+  ["expanded error", true, true, 640],
+  ["expanded content", false, true, 320],
+] as const) {
+  test(`web ${label} preview clips at a Unicode scalar boundary`, () => {
+    const tool = register(webContent);
+    const preview = (text: string) => render(tool.renderResult({
+      isError, content: [{ type: "text", text }],
+    }, { expanded, isPartial: false }, theme)).split("\n")[1];
+    const prefix = "x".repeat(limit - 1);
+    assert.equal(preview(`${prefix}🙂tail`), `[dim]${prefix}...[/dim]`);
+    assert.equal(preview(`${prefix.slice(1)}🙂tail`), `[dim]${prefix.slice(1)}🙂...[/dim]`);
+    assert.equal(preview(`${prefix}x`), `[dim]${prefix}x[/dim]`);
+    assert.equal(preview(`${prefix}xy`), `[dim]${prefix}x...[/dim]`);
+  });
+}
+
+test("web call preview preserves its ASCII budget including the ellipsis", () => {
+  // URL serialization percent-encodes supplementary characters before display.
+  const tool = register(webContent);
+  const url = "https://example.test/".padEnd(72, "x");
+  assert.equal(render(tool.renderCall({ url }, theme)),
+    `[toolTitle]web_content [/toolTitle][accent]${url}[/accent]`);
+  assert.equal(render(tool.renderCall({ url: `${url}🙂` }, theme)),
+    `[toolTitle]web_content [/toolTitle][accent]${url.slice(0, 69)}...[/accent]`);
+});
+
 test("web clips readable content at a Unicode scalar boundary", async (t) => {
   const prefix = "日本語 café ".padEnd(999, "界");
   t.mock.method(undici, "fetch", async () => new undici.Response(`${prefix}🙂fin`, {
