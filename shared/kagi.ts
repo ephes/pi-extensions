@@ -156,7 +156,14 @@ export function getKagiApiKey(): string {
   return apiKey;
 }
 
+function kagiCancelledError(): Error {
+  const error = new Error("Kagi search cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+
 export async function searchKagi(query: string, limit?: number, signal?: AbortSignal): Promise<KagiSearchResponse> {
+  if (signal?.aborted) throw kagiCancelledError();
   admitKagiQuery(query);
   const apiKey = getKagiApiKey();
   const normalizedLimit = normalizeKagiLimit(limit);
@@ -171,10 +178,12 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
   const aborted = new Promise<never>((_resolve, reject) => {
     onAbort = () => {
       const timedOut = controller.signal.aborted && !signal?.aborted;
-      const error = new Error(timedOut
-        ? "Kagi search timed out after 30 seconds. Please retry."
-        : "Kagi search cancelled.");
-      error.name = timedOut ? "TimeoutError" : "AbortError";
+      if (!timedOut) {
+        reject(kagiCancelledError());
+        return;
+      }
+      const error = new Error("Kagi search timed out after 30 seconds. Please retry.");
+      error.name = "TimeoutError";
       reject(error);
     };
     if (combined.aborted) onAbort();
@@ -210,7 +219,7 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
     const body = await readBody(response, combined);
     combined.throwIfAborted();
     let payload: unknown;
-    try { payload = parseUnambiguousJson(body, 64, 16384, 16384); }
+    try { payload = parseUnambiguousJson(body, 64, 16384, 16384, 16384); }
     catch { throw new Error("Kagi API response is not valid JSON."); }
     return validateResponse(payload);
   };

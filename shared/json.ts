@@ -2,16 +2,21 @@ import { visit } from "jsonc-parser";
 
 /** Strict JSON admission via the parser's public visitor, before native decoding.
  * Key comparisons use decoded names, so escaped aliases cannot override members.
- * The member limit counts properties across all objects in the document.
+ * The member and element limits apply across all objects and arrays, respectively.
  */
 export function parseUnambiguousJson(
-  text: string, maxDepth = 128, maxContainers = 65536, maxObjectMembers = 65536,
+  text: string, maxDepth = 128, maxContainers = 65536, maxObjectMembers = 65536, maxArrayElements = 65536,
 ): unknown {
   const stack: Array<Set<string> | null> = [];
   let containers = 0;
   let objectMembers = 0;
+  let arrayElements = 0;
   const invalid = () => { throw new Error("Invalid JSON structure."); };
+  const countArrayElement = () => {
+    if (stack.at(-1) === null && ++arrayElements > maxArrayElements) invalid();
+  };
   const begin = (keys: Set<string> | null) => {
+    countArrayElement();
     if (++containers > maxContainers || stack.length >= maxDepth) invalid();
     stack.push(keys);
   };
@@ -26,6 +31,7 @@ export function parseUnambiguousJson(
     onObjectEnd: () => { stack.pop(); },
     onArrayEnd: () => { stack.pop(); },
     onLiteralValue: value => {
+      countArrayElement();
       if (typeof value === "number" && !Number.isFinite(value)) invalid();
     },
     onError: invalid,

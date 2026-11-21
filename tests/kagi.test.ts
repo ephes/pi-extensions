@@ -56,6 +56,17 @@ afterEach(() => {
 
 const valid = { data: [{ t: 0, url: "https://example.com", title: "Café", snippet: "text", published: 1735689600 }, { t: 1, list: ["related"] }], meta: { id: "id", extra: true }, extra: true };
 
+test("searchKagi honors pre-aborted calls before credential lookup", async (t) => {
+  delete process.env.KAGI_API_KEY;
+  const fetch = t.mock.method(globalThis, "fetch", async () => Response.json(valid));
+  const signal = AbortSignal.abort(new Error("synthetic reason"));
+
+  await assert.rejects(searchKagi("query", undefined, signal),
+    { name: "AbortError", message: "Kagi search cancelled." });
+  await assert.rejects(searchKagi("query"), /KAGI_API_KEY is not set/);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
 test("searchKagi validates envelopes, items and optional fields", async (t) => {
   let payload: unknown;
   t.mock.method(globalThis, "fetch", async () => Response.json(payload));
@@ -609,6 +620,7 @@ for (const body of [
   '{"data":[],"extra":{"nested":{"x":1,"x":2}}}',
   '{"data":[],"extra":' + '['.repeat(64) + '0' + ']'.repeat(64) + '}',
   '{"data":[],"extra":[' + Array.from({ length: 16384 }, () => '{}').join(',') + ']}',
+  '{"data":[],"extra":[' + '0,'.repeat(16384) + '0]}',
   '{"data":[],"extra":{' + Array.from({ length: 16383 }, (_, i) => `"k${i}":0`).join(',') + '}}',
   '{"data":[],"extra":{"x":[1e309]}}',
   '{"data":[{"t":0,"url":"https://example.com/","title":"t","published":-1e309}]}',
@@ -629,6 +641,8 @@ test("Kagi admits multibyte optional extensions at structural boundaries", async
   t.mock.method(globalThis, "fetch", async () => new Response(body));
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
   body = '{"data":[],"extra":[' + Array.from({ length: 16381 }, () => '{}').join(',') + ']}';
+  assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
+  body = '{"data":[],"extra":[' + '0,'.repeat(16383) + '0]}';
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
   body = '{"data":[],"extra":{' + Array.from({ length: 16382 }, (_, i) => `"k${i}":0`).join(',') + '}}';
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
