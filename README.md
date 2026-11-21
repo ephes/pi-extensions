@@ -140,6 +140,9 @@ optional field after validating its scalar type.
 
 Kagi searches have a 30-second total deadline covering headers and body reads; caller cancellation is immediate. Success and error responses are limited to 1 MiB of streamed bytes, regardless of Content-Length. Timeout errors invite a retry (`TimeoutError`); cancellation uses `AbortError` with a controlled message. HTTP error diagnostics include only the status and a fixed service/access retry hint; upstream error body text is never copied into diagnostics. Transport and body-read failures use bounded categories without upstream messages or causes. Successful responses require valid UTF-8 before JSON admission; malformed bytes publish no search results. HTTP error bodies are cancelled unread, so stalled, oversized or malformed error bodies cannot hide the status.
 
+If the caller's signal is already aborted, `searchKagi` returns `AbortError`
+before validating the query, reading `KAGI_API_KEY`, or starting the deadline.
+
 Kagi search accepts only HTTP 200 responses without a Content-Range header.
 Other successful statuses and any Content-Range header cause the body to be
 cancelled unread and the search to fail before returning results.

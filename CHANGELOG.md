@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Report already cancelled Kagi calls as `AbortError` before checking credentials or starting the deadline.
 - Bound total array elements before native JSON decoding to 16,384 per Kagi response and 65,536 per agent workflow protocol line.
 - Honor cancellation and the deadline during web dispatcher cleanup while preserving earlier fetch failures.
 - Decode readable web responses using their supported Content-Type charset, with UTF-8 as the fallback.
