@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Honor cancellation and the deadline during web dispatcher cleanup while preserving earlier fetch failures.
 - Decode readable web responses using their supported Content-Type charset, with UTF-8 as the fallback.
 - Preserve Kagi search outcomes when body cancellation or reader release fails.
 - Require HTTP 200 without Content-Range for Kagi searches and cancel refused response bodies unread.

@@ -55,7 +55,9 @@ export async function fetchReadablePage(rawUrl: string, maxChars?: number, signa
   const timer = setTimeout(() => deadline.abort(timeoutError), FETCH_DEADLINE_MS);
   const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   try {
-    return await fetchPage(rawUrl, normalizeReadableLimit(maxChars), combined);
+    const page = await fetchPage(rawUrl, normalizeReadableLimit(maxChars), combined);
+    combined.throwIfAborted();
+    return page;
   } finally {
     clearTimeout(timer);
   }

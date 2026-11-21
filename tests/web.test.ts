@@ -205,6 +205,56 @@ for (const cleanup of ["reject", "stall", "throw"] as const) {
   }
 }
 
+for (const cause of ["caller", "deadline"] as const) {
+  for (const bodyOutcome of ["complete", "failed"] as const) {
+    test(`dispatcher retirement observes ${cause} cancellation after a ${bodyOutcome} body`, async (t) => {
+      t.mock.method(dns, "lookup", async () => approved);
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const body = bodyOutcome === "complete" ? "readable content" : new ReadableStream<Uint8Array>({
+        pull(controller) { controller.error(new Error("private body failure")); },
+      });
+      t.mock.method(undici, "fetch", async () => new undici.Response(body, {
+        headers: { "content-type": "text/plain" },
+      }));
+
+      let started!: () => void;
+      const retirementStarted = new Promise<void>(resolve => { started = resolve; });
+      let finishRetirement!: () => void;
+      const retirement = new Promise<void>(resolve => { finishRetirement = resolve; });
+      const destroy = t.mock.method(Agent.prototype, "destroy", () => {
+        started();
+        return retirement;
+      });
+
+      const controller = new AbortController();
+      const reason = new Error("caller cancelled during dispatcher retirement");
+      const outcome = fetchReadablePage("https://public.example/", undefined, controller.signal)
+        .then(() => undefined, (error: unknown) => error);
+      await retirementStarted;
+      try {
+        if (cause === "caller") controller.abort(reason);
+        else t.mock.timers.tick(30_000);
+
+        const error = await Promise.race([
+          outcome,
+          new Promise<undefined>(resolve => { setImmediate(() => resolve(undefined)); }),
+        ]);
+        assert.equal(destroy.mock.callCount(), 1);
+        assert.ok(error instanceof Error, "fetch must reject before dispatcher retirement finishes");
+        if (bodyOutcome === "failed") {
+          assert.equal(error.message, "Unable to read response from https://public.example/; retry the request.");
+        } else if (cause === "caller") {
+          assert.equal(error, reason);
+        } else {
+          assert.match(error.message, /Web fetch timed out after 30 seconds/);
+        }
+      } finally {
+        finishRetirement();
+      }
+    });
+  }
+}
+
 test("fetch pins validated IPv4/IPv6 answers without another DNS lookup and preserves Host", async (t) => {
   let lookups = 0;
   t.mock.method(dns, "lookup", async () => ++lookups === 1 ? approved : [{ address: "127.0.0.1", family: 4 }]);
