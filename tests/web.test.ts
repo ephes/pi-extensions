@@ -205,6 +205,56 @@ for (const cleanup of ["reject", "stall", "throw"] as const) {
   }
 }
 
+for (const cause of ["caller", "deadline"] as const) {
+  for (const bodyOutcome of ["complete", "failed"] as const) {
+    test(`dispatcher retirement observes ${cause} cancellation after a ${bodyOutcome} body`, async (t) => {
+      t.mock.method(dns, "lookup", async () => approved);
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      const body = bodyOutcome === "complete" ? "readable content" : new ReadableStream<Uint8Array>({
+        pull(controller) { controller.error(new Error("private body failure")); },
+      });
+      t.mock.method(undici, "fetch", async () => new undici.Response(body, {
+        headers: { "content-type": "text/plain" },
+      }));
+
+      let started!: () => void;
+      const retirementStarted = new Promise<void>(resolve => { started = resolve; });
+      let finishRetirement!: () => void;
+      const retirement = new Promise<void>(resolve => { finishRetirement = resolve; });
+      const destroy = t.mock.method(Agent.prototype, "destroy", () => {
+        started();
+        return retirement;
+      });
+
+      const controller = new AbortController();
+      const reason = new Error("caller cancelled during dispatcher retirement");
+      const outcome = fetchReadablePage("https://public.example/", undefined, controller.signal)
+        .then(() => undefined, (error: unknown) => error);
+      await retirementStarted;
+      try {
+        if (cause === "caller") controller.abort(reason);
+        else t.mock.timers.tick(30_000);
+
+        const error = await Promise.race([
+          outcome,
+          new Promise<undefined>(resolve => { setImmediate(() => resolve(undefined)); }),
+        ]);
+        assert.equal(destroy.mock.callCount(), 1);
+        assert.ok(error instanceof Error, "fetch must reject before dispatcher retirement finishes");
+        if (bodyOutcome === "failed") {
+          assert.equal(error.message, "Unable to read response from https://public.example/; retry the request.");
+        } else if (cause === "caller") {
+          assert.equal(error, reason);
+        } else {
+          assert.match(error.message, /Web fetch timed out after 30 seconds/);
+        }
+      } finally {
+        finishRetirement();
+      }
+    });
+  }
+}
+
 test("fetch pins validated IPv4/IPv6 answers without another DNS lookup and preserves Host", async (t) => {
   let lookups = 0;
   t.mock.method(dns, "lookup", async () => ++lookups === 1 ? approved : [{ address: "127.0.0.1", family: 4 }]);
@@ -467,6 +517,27 @@ for (const contentType of ["text/plain", "Text/Plain; charset=UTF-8"]) {
     assert.equal(page.sourceTruncated, false);
     assert.equal(page.outputTruncated, false);
     assert.equal(page.truncated, false);
+  });
+}
+
+for (const { contentType, mediaType, encoding } of [
+  { contentType: 'text/plain; note="a; charset=utf-16le"; Charset="Windows-1252"', mediaType: "plain", encoding: "latin1" },
+  { contentType: "text/html; charset=iso-8859-1", mediaType: "html", encoding: "latin1" },
+  { contentType: "application/xhtml+xml; charset=utf-16le", mediaType: "html", encoding: "utf16le" },
+  { contentType: "text/plain; charset=unsupported-encoding", mediaType: "plain", encoding: "utf8" },
+  { contentType: "text/plain", mediaType: "plain", encoding: "utf8" },
+  { contentType: undefined, mediaType: "html", encoding: "utf8" },
+] as const) {
+  test(`fetch decodes readable response charset for ${contentType ?? "absent Content-Type"}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const html = mediaType === "html";
+    await fixture(t, (_request, response) => {
+      if (contentType) response.setHeader("content-type", contentType);
+      response.end(Buffer.from(html ? "<title>Café</title><p>Crème brûlée</p>" : "Crème brûlée", encoding));
+    });
+    const page = await fetchReadablePage("http://public.example/");
+    assert.equal(page.title, html ? "Café" : undefined);
+    assert.equal(page.content, html ? "Café\n\nCrème brûlée" : "Crème brûlée");
   });
 }
 
