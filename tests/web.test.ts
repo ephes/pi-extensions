@@ -350,11 +350,17 @@ test("caller cancellation interrupts DNS immediately", async (t) => {
   await assert.rejects(pending, (error) => error === reason);
 });
 
-test("already cancelled caller does not resolve or connect", async (t) => {
+test("already cancelled caller does not start a deadline, resolve or connect", async (t) => {
+  const setTimeout = t.mock.method(globalThis, "setTimeout");
   const lookup = t.mock.method(dns, "lookup", () => { throw new Error("Unexpected DNS"); });
+  const fetch = t.mock.method(undici, "fetch", () => { throw new Error("Unexpected fetch"); });
   const reason = new Error("Cancelled before fetch");
   await assert.rejects(fetchReadablePage("http://public.example/", 20_000, AbortSignal.abort(reason)), (error) => error === reason);
+  const defaultAbort = AbortSignal.abort();
+  await assert.rejects(fetchReadablePage("http://public.example/", undefined, defaultAbort), (error) => error === defaultAbort.reason);
+  assert.equal(setTimeout.mock.callCount(), 0);
   assert.equal(lookup.mock.callCount(), 0);
+  assert.equal(fetch.mock.callCount(), 0);
 });
 
 for (const stage of ["headers", "body", "dripping body"] as const) {

@@ -50,6 +50,7 @@ export function normalizeReadableLimit(limit: number | undefined): number {
 }
 
 export async function fetchReadablePage(rawUrl: string, maxChars?: number, signal?: AbortSignal): Promise<ReadablePage> {
+  signal?.throwIfAborted();
   const deadline = new AbortController();
   const timeoutError = new Error("Web fetch timed out after 30 seconds; retry the request.");
   const timer = setTimeout(() => deadline.abort(timeoutError), FETCH_DEADLINE_MS);
