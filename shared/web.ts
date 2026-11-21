@@ -4,7 +4,7 @@ import net from "node:net";
 import type { LookupFunction } from "node:net";
 import { MIMEType } from "node:util";
 import undici, { Agent, type Response } from "undici";
-import { USER_AGENT } from "./http.js";
+import { EmptyResponseReadLimitError, MAX_CONSECUTIVE_EMPTY_READS, USER_AGENT } from "./http.js";
 import { clipText } from "./text.js";
 
 export interface ReadablePage {
@@ -121,8 +121,9 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
       }
 
       const decoder = responseTextDecoder(contentType);
-      const { text, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal, decoder).catch(() => {
+      const { text, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal, decoder).catch((error: unknown) => {
         signal.throwIfAborted();
+        if (error instanceof EmptyResponseReadLimitError) throw error;
         throw new Error(`Unable to read response from ${displayUrl(currentUrl.toString())}; retry the request.`);
       });
       const title = mediaType === "text/plain" ? undefined : extractTitle(text);
@@ -334,6 +335,7 @@ async function readResponseTextWithLimit(response: Response, maxBytes: number, s
 
   const reader = response.body.getReader();
   let bytesRead = 0;
+  let emptyReads = 0;
   let truncated = false;
   let text = "";
   let fullyRead = false;
@@ -347,8 +349,10 @@ async function readResponseTextWithLimit(response: Response, maxBytes: number, s
         break;
       }
       if (!value || value.byteLength === 0) {
+        if (++emptyReads > MAX_CONSECUTIVE_EMPTY_READS) throw new EmptyResponseReadLimitError();
         continue;
       }
+      emptyReads = 0;
 
       const remaining = maxBytes - bytesRead;
       if (remaining <= 0) {

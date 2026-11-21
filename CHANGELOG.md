@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fail Web and Kagi response reads after 256 consecutive empty chunks with a fixed retry diagnostic and cancel the incomplete body.
 - Clip agent workflow chain handoffs at Unicode scalar boundaries within the shared UTF-16 allowance.
 - Reject unpaired surrogates in submitted workflow task text, agent names and working-directory labels before staging prompts.
 - Report already cancelled Kagi calls as `AbortError` before checking credentials or starting the deadline.

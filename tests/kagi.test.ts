@@ -99,6 +99,41 @@ test("searchKagi bounds chunked success bodies, cancels unread error bodies and 
   assert.ok(pulls <= 8);
 });
 
+for (const overLimit of [false, true]) {
+  test(`Kagi body bounds consecutive empty reads (over limit=${overLimit})`, async (t) => {
+    const empty = new Uint8Array();
+    const bytes = new TextEncoder().encode(JSON.stringify(valid));
+    const split = bytes.indexOf(0xc3) + 1; // Split the UTF-8 sequence in "Café".
+    const chunks = [bytes.subarray(0, split), ...Array<Uint8Array>(256).fill(empty), bytes.subarray(split),
+      ...Array<Uint8Array>(overLimit ? 300 : 256).fill(empty)];
+    let reads = 0;
+    const reader = {
+      async read() {
+        const value = chunks[reads++];
+        return { done: value === undefined, value };
+      },
+      async cancel() {},
+      releaseLock() {},
+    };
+    const cancel = t.mock.method(reader, "cancel");
+    const release = t.mock.method(reader, "releaseLock");
+    t.mock.method(globalThis, "fetch", async () => ({
+      ok: true, status: 200, headers: new Headers(), body: { getReader: () => reader },
+    }));
+
+    const pending = searchKagi("query");
+    if (overLimit) {
+      await assert.rejects(pending, { message: "Response body exceeded the consecutive empty-read limit; retry the request." });
+      assert.equal(reads, 2 + 256 + 257);
+    } else {
+      assert.deepEqual(await pending, valid);
+      assert.equal(reads, chunks.length + 1);
+    }
+    assert.equal(cancel.mock.callCount(), 1);
+    assert.equal(release.mock.callCount(), 1);
+  });
+}
+
 test("searchKagi decodes exact-limit multibyte JSON across chunks", async (t) => {
   const bytes = new TextEncoder().encode(JSON.stringify(valid));
   const padded = new Uint8Array(KAGI_RESPONSE_MAX_BYTES).fill(32);

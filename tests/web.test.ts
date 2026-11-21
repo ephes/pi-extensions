@@ -610,6 +610,43 @@ test("caller cancellation interrupts a stalled plain-text body", async (t) => {
   await rejected;
 });
 
+for (const overLimit of [false, true]) {
+  test(`web body bounds consecutive empty reads (over limit=${overLimit})`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const empty = new Uint8Array();
+    const chunks = [Uint8Array.of(65), ...Array<Uint8Array>(256).fill(empty), Uint8Array.of(66),
+      ...Array<Uint8Array>(overLimit ? 300 : 256).fill(empty)];
+    let reads = 0;
+    const reader = {
+      async read() {
+        const value = chunks[reads++];
+        return { done: value === undefined, value };
+      },
+      async cancel() {},
+      releaseLock() {},
+    };
+    const cancel = t.mock.method(reader, "cancel");
+    const release = t.mock.method(reader, "releaseLock");
+    t.mock.method(undici, "fetch", async () => ({
+      ok: true, status: 200, headers: new Headers({ "content-type": "text/plain" }),
+      body: { getReader: () => reader },
+    }));
+
+    const pending = fetchReadablePage("https://public.example/");
+    if (overLimit) {
+      await assert.rejects(pending, { message: "Response body exceeded the consecutive empty-read limit; retry the request." });
+      assert.equal(reads, 2 + 256 + 257);
+    } else {
+      const page = await pending;
+      assert.equal(page.content, "AB");
+      assert.equal(page.truncated, false);
+      assert.equal(reads, chunks.length + 1);
+    }
+    assert.equal(cancel.mock.callCount(), overLimit ? 1 : 0);
+    assert.equal(release.mock.callCount(), 1);
+  });
+}
+
 for (const size of [2 * 1024 * 1024 - 1, 2 * 1024 * 1024, 2 * 1024 * 1024 + 1]) {
   test(`source truncation reports omitted bytes at size ${size}`, async (t) => {
     t.mock.method(dns, "lookup", async () => approved);

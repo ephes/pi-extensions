@@ -150,6 +150,9 @@ cancelled unread and the search to fail before returning results.
 Successful Kagi bodies are decoded as they stream. The decoder preserves UTF-8
 characters split across reads and rejects incomplete sequences at EOF. Small
 decoded fragments are consolidated during reading to limit buffering overhead.
+Kagi and web response bodies allow up to 256 consecutive empty reads. A
+read with bytes resets that count. Exceeding the limit fails the request with
+a fixed retry diagnostic and cancels the incomplete body.
 Cancellation or deadline expiry stops late body reads before further decoding
 and prevents the cancelled response from reaching JSON validation. Body
 cancellation and reader release are best effort. Cleanup failures preserve the

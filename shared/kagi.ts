@@ -1,5 +1,5 @@
 import { parseUnambiguousJson } from "./json.js";
-import { USER_AGENT } from "./http.js";
+import { EmptyResponseReadLimitError, MAX_CONSECUTIVE_EMPTY_READS, USER_AGENT } from "./http.js";
 
 const KAGI_API_URL = "https://kagi.com/api/v0/search";
 const KAGI_DECODE_BATCH_CHARS = 4096;
@@ -115,6 +115,7 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
   const fragments: string[] = [];
   let fragmentChars = 0;
   let size = 0;
+  let emptyReads = 0;
   try {
     while (true) {
       const { done, value } = await reader.read().catch(() => {
@@ -122,6 +123,11 @@ async function readBody(response: Response, signal: AbortSignal): Promise<string
       });
       signal.throwIfAborted();
       if (done) break;
+      if (value.byteLength === 0) {
+        if (++emptyReads > MAX_CONSECUTIVE_EMPTY_READS) throw new EmptyResponseReadLimitError();
+        continue;
+      }
+      emptyReads = 0;
       size += value.byteLength;
       if (size > KAGI_RESPONSE_MAX_BYTES) {
         throw new Error("Kagi API response exceeds the 1 MiB byte limit.");
