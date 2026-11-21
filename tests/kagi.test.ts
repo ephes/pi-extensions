@@ -383,6 +383,31 @@ test("Kagi refuses over-limit UTF-8 queries before progress or transport, includ
   assert.equal(fetch.mock.callCount(), 0);
 });
 
+for (const entry of ["direct search", "registered tool"]) {
+  test(`Kagi ${entry} rejects unpaired surrogates and preserves supplementary Unicode`, async (t) => {
+    const queries: string[][] = [];
+    t.mock.method(globalThis, "fetch", async (url: URL) => {
+      queries.push(url.searchParams.getAll("q"));
+      return Response.json({ data: [] });
+    });
+    const progress: SearchProgress[] = [];
+    const tool = registeredSearch();
+    const run = (query: string) => entry === "direct search"
+      ? searchKagi(query)
+      : tool.execute("test", { query }, undefined, update => progress.push(update));
+
+    for (const query of [" \uD800query ", "query\uDFFF"]) {
+      await assert.rejects(run(query), { message: "Kagi query must be valid Unicode text." });
+    }
+    assert.deepEqual(queries, []);
+    assert.equal(progress.length, 0);
+
+    const query = "𠮷 😀 &q=other+#";
+    await run(query);
+    assert.deepEqual(queries, [[query]]);
+  });
+}
+
 test("Kagi admits exact-byte boundaries and preserves full query text with bounded progress", async (t) => {
   const queries: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: URL) => {
