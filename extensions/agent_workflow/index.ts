@@ -9,6 +9,7 @@ import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-a
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseUnambiguousJson } from "../../shared/json.js";
+import { clipText } from "../../shared/text.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
 import { resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
 
@@ -471,8 +472,8 @@ function writeAgentInputFiles(agentName: string, prompt: string, task: string): 
 function truncatePreviousOutput(previousOutput: string, limit: number): string {
   if (previousOutput.length <= limit) return previousOutput;
   const notice = `[Previous agent workflow output truncated from ${previousOutput.length} to ${limit} characters.]\n\n`;
-  if (limit <= notice.length) return previousOutput.slice(0, limit);
-  return notice + previousOutput.slice(0, limit - notice.length);
+  if (limit <= notice.length) return clipText(previousOutput, limit);
+  return notice + clipText(previousOutput, limit - notice.length);
 }
 
 async function runSingleAgent(

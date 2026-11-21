@@ -476,6 +476,33 @@ for (const oversized of [false, true]) {
   });
 }
 
+for (const withNotice of [true, false]) {
+  test(`chain handoff clips at a Unicode scalar boundary (notice=${withNotice})`, async (t) => {
+    const { children, execute, tasks } = setup(t);
+    const placeholders = withNotice ? 2 : 200;
+    const limit = 12000 / placeholders;
+    const notice = withNotice
+      ? `[Previous agent workflow output truncated from 13000 to ${limit} characters.]\n\n`
+      : "";
+    const prefix = "x".repeat(limit - notice.length - 1);
+    const previous = (prefix + "😀").padEnd(13000, "y");
+    const run = execute(undefined, true, "{previous}".repeat(placeholders));
+    children[0].stdout.emit("data", messageLine(previous));
+    children[0].emit("close", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    children[1].stdout.emit("data", messageLine("final answer"));
+    children[1].emit("close", 0, null);
+    const result = await run;
+    assert.equal(result.isError, undefined);
+    assert.ok(!/\uFFFD|[\uD800-\uDFFF]/u.test(tasks[1]), "staged prompt must retain valid Unicode");
+    assert.equal(tasks[1], "Task: " + (notice + prefix).repeat(placeholders));
+    const last = result.details.results[1] as typeof result.details.results[1] & { handoff: unknown };
+    assert.deepEqual(last.handoff, {
+      sourceChars: previous.length, insertedChars: (limit - 1) * placeholders, truncated: true,
+    });
+  });
+}
+
 test("aborting a chain stops before the next subprocess", async (t) => {
   const { children, execute } = setup(t);
   const controller = new AbortController();
