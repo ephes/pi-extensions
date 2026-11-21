@@ -34,3 +34,22 @@ test("strict JSON bounds total object members independently of containers", () =
   assert.throws(() => parseUnambiguousJson('[{"a":0,"b":1},{"a":2,"b":3}]', 8, 8, 3),
     { message: "Invalid JSON structure." });
 });
+
+test("strict JSON bounds scalar array work before native decoding", (t) => {
+  const atLimit = '[0,true,"x",null]';
+  const overLimit = '[0,true,"x",null,false]';
+  const parse = JSON.parse;
+  const nativeDecode = t.mock.method(JSON, "parse", (text: string) => parse(text));
+
+  assert.deepEqual(parseUnambiguousJson(atLimit, 1, 1, 0, 4), [0, true, "x", null]);
+  assert.throws(() => parseUnambiguousJson(overLimit, 1, 1, 0, 4),
+    { message: "Invalid JSON structure." });
+  assert.equal(nativeDecode.mock.calls.filter(call => call.arguments[0] === overLimit).length, 0);
+});
+
+test("strict JSON counts array elements across nested arrays", () => {
+  const text = '{"items":[{},[0]],"other":[null],"scalar":true}';
+  assert.deepEqual(parseUnambiguousJson(text, 8, 8, 8, 4), JSON.parse(text));
+  assert.throws(() => parseUnambiguousJson(text, 8, 8, 8, 3),
+    { message: "Invalid JSON structure." });
+});

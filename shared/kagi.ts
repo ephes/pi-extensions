@@ -210,7 +210,7 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
     const body = await readBody(response, combined);
     combined.throwIfAborted();
     let payload: unknown;
-    try { payload = parseUnambiguousJson(body, 64, 16384, 16384); }
+    try { payload = parseUnambiguousJson(body, 64, 16384, 16384, 16384); }
     catch { throw new Error("Kagi API response is not valid JSON."); }
     return validateResponse(payload);
   };

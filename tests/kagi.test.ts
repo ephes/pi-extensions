@@ -609,6 +609,7 @@ for (const body of [
   '{"data":[],"extra":{"nested":{"x":1,"x":2}}}',
   '{"data":[],"extra":' + '['.repeat(64) + '0' + ']'.repeat(64) + '}',
   '{"data":[],"extra":[' + Array.from({ length: 16384 }, () => '{}').join(',') + ']}',
+  '{"data":[],"extra":[' + '0,'.repeat(16384) + '0]}',
   '{"data":[],"extra":{' + Array.from({ length: 16383 }, (_, i) => `"k${i}":0`).join(',') + '}}',
   '{"data":[],"extra":{"x":[1e309]}}',
   '{"data":[{"t":0,"url":"https://example.com/","title":"t","published":-1e309}]}',
@@ -629,6 +630,8 @@ test("Kagi admits multibyte optional extensions at structural boundaries", async
   t.mock.method(globalThis, "fetch", async () => new Response(body));
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
   body = '{"data":[],"extra":[' + Array.from({ length: 16381 }, () => '{}').join(',') + ']}';
+  assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
+  body = '{"data":[],"extra":[' + '0,'.repeat(16383) + '0]}';
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
   body = '{"data":[],"extra":{' + Array.from({ length: 16382 }, (_, i) => `"k${i}":0`).join(',') + '}}';
   assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));

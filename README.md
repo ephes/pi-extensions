@@ -158,7 +158,9 @@ Search and web result displays mark failed calls as failures with bounded diagno
 
 Successful response JSON must have unique decoded member names and finite
 decoded numbers, including in optional extension fields. Each response admits
-up to 64 container levels, 16,384 objects/arrays, and 16,384 object members. Duplicate keys (including escaped aliases), numeric or structural overflow, comments, trailing commas and malformed JSON yield one fixed safe parsing diagnostic before results are returned or rendered. Valid optional extension fields remain available within this envelope.
+up to 64 container levels, 16,384 objects/arrays, 16,384 object members, and
+16,384 array elements across all arrays. These limits apply before native JSON
+decoding. Duplicate keys (including escaped aliases), numeric or structural overflow, comments, trailing commas and malformed JSON yield one fixed safe parsing diagnostic before results are returned or rendered. Valid optional extension fields remain available within this envelope.
 
 The response must contain a `data` array of result items (`t: 0`, string `url` and `title`, optional string `snippet` and string or finite numeric `published`) or related-search items (`t: 1`, string-only `list`). Optional result and metadata scalars may also be `null` for absent values. Optional metadata must be an object with string `id`/`node` and finite numeric `ms`/`api_balance` when supplied. The shared `searchKagi` helper retains unknown extra fields after validation; the tool projects bounded metadata as described above. Unsupported item types and malformed fields fail with a controlled error.
 Result URLs must use an absolute `http://` or `https://` authority form, parse
@@ -272,7 +274,8 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 
 Agent workflow stdout uses streaming, strict UTF-8 decoding, including the final
 line at EOF. Every nonblank line must be complete JSON with unique decoded object-member names and finite decoded numbers at every depth, including in ignored events. Each protocol line admits up to 128 container levels, 65,536 containers,
-and 65,536 object members. Duplicate names (including escaped aliases) and numeric or structural overflow fail through the same bounded invalid-JSON diagnostic. Comments and trailing commas are refused; malformed or incomplete
+65,536 object members, and 65,536 array elements across all arrays before native
+JSON decoding. Duplicate names (including escaped aliases) and numeric or structural overflow fail through the same bounded invalid-JSON diagnostic. Comments and trailing commas are refused; malformed or incomplete
 JSON fails even after a completed answer. There is no supported non-JSON
 preamble. Blank lines and unconsumed valid JSON event types remain ignored for output, but each invocation admits at most 64 MiB of total stdout bytes (including blank lines and newline bytes) and 65,536 nonblank protocol events (including ignored JSON values/types and a final line without a newline). Both ceilings are inclusive and apply before parsing/retention. Exhaustion fails the entire run even after an earlier completed answer, terminates/reaps its owned group, removes prompt files and stops chain handoffs.
 Diagnostics never include the malformed line. The 1 MiB ceiling applies to every event, including cumulative
