@@ -61,19 +61,24 @@ Definitions are accepted only when consumed length and descriptor identity, size
 mtime and ctime remain unchanged across the read and a final pathname check
 still resolves to that generation. In-place edits, truncation and replacement
 (including symlink retargeting) are isolated as invalid definitions.
-Definitions must resolve to regular files of at most 256 KiB, including bytes
-added while reading. Symlinks to regular files remain supported, including
-targets outside `agents/`; directories, devices and FIFOs are refused through
-the opened descriptor. Opening uses nonblocking mode so a FIFO target cannot
-stall discovery. Each invalid file gets the same filename-only warning and does
-not hide other valid agents within an admitted discovery generation.
+Definitions must resolve to regular files of at most 256 KiB. Each read buffer
+is sized to the opened file length or remaining discovery byte budget, whichever
+is smaller, plus one byte to detect growth or overflow. Symlinks to regular files
+remain supported, including targets outside `agents/`. The opened descriptor
+is used to refuse directories, devices and FIFOs. Opening uses nonblocking mode
+so a FIFO target cannot stall discovery. Each invalid file gets the same
+filename-only warning and does not hide other valid agents within an admitted
+discovery generation.
 Discovery iterates with Node's public directory API and admits at most 256
 entries (including unrelated files/directories) and 4 MiB of actual definition
 reads in total, including invalid definitions. At most one extra byte is read
 to detect aggregate overflow. Both ceilings are inclusive. Overflow or an
 iterator error discards every agent and per-file warning from that generation
 and returns one fixed diagnostic; no partial allowlist can launch a delegate.
-File and directory descriptors close on success and refusal.
+Discovery attempts to close file and directory descriptors on success and
+refusal. If either close fails during a limit refusal, discovery still reports
+the fixed limit diagnostic. A directory close failure on its own discards the
+inventory with the fixed directory failure diagnostic.
 
 Bundled agent frontmatter uses these model IDs:
 

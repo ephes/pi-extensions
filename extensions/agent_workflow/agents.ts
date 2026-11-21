@@ -32,13 +32,24 @@ function sameGeneration(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
     left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
+function closeDiscoveryHandle(close: () => void, limitExceeded: boolean): void {
+  try {
+    close();
+  } catch (error) {
+    // The shared limit must reach the inventory-level refusal.
+    if (!limitExceeded) throw error;
+  }
+}
+
 function readDefinition(filePath: string, remainingBytes: number, charge: (bytes: number) => void): string {
   // Follow intentional links, but never block opening a FIFO swapped into place.
   const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  let limitExceeded = false;
   try {
     const stat = fs.fstatSync(fd, { bigint: true });
     if (!stat.isFile() || stat.size > MAX_DEFINITION_BYTES) throw new Error("Invalid definition file.");
-    const bytes = Buffer.alloc(Math.min(MAX_DEFINITION_BYTES, remainingBytes) + 1);
+    // One extra byte detects growth or exhaustion of the shared read budget.
+    const bytes = Buffer.alloc(Math.min(Number(stat.size), remainingBytes) + 1);
     let used = 0;
     while (used < bytes.length) {
       const read = fs.readSync(fd, bytes, used, bytes.length - used, null);
@@ -53,11 +64,13 @@ function readDefinition(filePath: string, remainingBytes: number, charge: (bytes
       }
       charge(read);
       used += read;
-      if (used > MAX_DEFINITION_BYTES) break;
     }
-    throw new Error("Definition exceeds byte limit.");
+    throw new Error("Definition grew while reading.");
+  } catch (error) {
+    limitExceeded = error instanceof DiscoveryLimitError;
+    throw error;
   } finally {
-    fs.closeSync(fd);
+    closeDiscoveryHandle(() => fs.closeSync(fd), limitExceeded);
   }
 }
 
@@ -72,6 +85,7 @@ export function discoverBundledAgents(): AgentDiscoveryResult {
   let definitionBytes = 0;
   try {
     const directory = fs.opendirSync(AGENTS_DIR);
+    let limitExceeded = false;
     try {
       let entries = 0;
       let entry: fs.Dirent | null;
@@ -121,8 +135,11 @@ export function discoverBundledAgents(): AgentDiscoveryResult {
           diagnostics.push(`Invalid bundled agent definition: ${entry.name}`);
         }
       }
+    } catch (error) {
+      limitExceeded = error instanceof DiscoveryLimitError;
+      throw error;
     } finally {
-      directory.closeSync();
+      closeDiscoveryHandle(() => directory.closeSync(), limitExceeded);
     }
   } catch (error) {
     // Never publish an arbitrary partial allowlist or a partial set of warnings.
