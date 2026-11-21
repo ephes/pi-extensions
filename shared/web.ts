@@ -2,6 +2,7 @@ import dns from "node:dns/promises";
 import { decodeHTML } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
+import { MIMEType } from "node:util";
 import undici, { Agent, type Response } from "undici";
 import { USER_AGENT } from "./http.js";
 import { clipText } from "./text.js";
@@ -117,7 +118,8 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         throw new Error("Unsupported response Content-Type; expected text/html, application/xhtml+xml or text/plain.");
       }
 
-      const { text, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal).catch(() => {
+      const decoder = responseTextDecoder(contentType);
+      const { text, truncated: sourceTruncated } = await readResponseTextWithLimit(response, MAX_FETCH_BYTES, signal, decoder).catch(() => {
         signal.throwIfAborted();
         throw new Error(`Unable to read response from ${displayUrl(currentUrl.toString())}; retry the request.`);
       });
@@ -311,13 +313,24 @@ function extractEmbeddedIpv4(ip: string): string | undefined {
   return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 }
 
-async function readResponseTextWithLimit(response: Response, maxBytes: number, signal: AbortSignal): Promise<{ text: string; truncated: boolean }> {
+function responseTextDecoder(contentType: string | null): TextDecoder {
+  if (contentType !== null) {
+    try {
+      const charset = new MIMEType(contentType).params.get("charset");
+      if (charset) return new TextDecoder(charset);
+    } catch {
+      // Invalid media type syntax or an unsupported decoder label uses UTF-8.
+    }
+  }
+  return new TextDecoder();
+}
+
+async function readResponseTextWithLimit(response: Response, maxBytes: number, signal: AbortSignal, decoder: TextDecoder): Promise<{ text: string; truncated: boolean }> {
   if (!response.body) {
     return { text: "", truncated: false };
   }
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
   let bytesRead = 0;
   let truncated = false;
   let text = "";

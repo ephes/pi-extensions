@@ -470,6 +470,27 @@ for (const contentType of ["text/plain", "Text/Plain; charset=UTF-8"]) {
   });
 }
 
+for (const { contentType, mediaType, encoding } of [
+  { contentType: 'text/plain; note="a; charset=utf-16le"; Charset="Windows-1252"', mediaType: "plain", encoding: "latin1" },
+  { contentType: "text/html; charset=iso-8859-1", mediaType: "html", encoding: "latin1" },
+  { contentType: "application/xhtml+xml; charset=utf-16le", mediaType: "html", encoding: "utf16le" },
+  { contentType: "text/plain; charset=unsupported-encoding", mediaType: "plain", encoding: "utf8" },
+  { contentType: "text/plain", mediaType: "plain", encoding: "utf8" },
+  { contentType: undefined, mediaType: "html", encoding: "utf8" },
+] as const) {
+  test(`fetch decodes readable response charset for ${contentType ?? "absent Content-Type"}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const html = mediaType === "html";
+    await fixture(t, (_request, response) => {
+      if (contentType) response.setHeader("content-type", contentType);
+      response.end(Buffer.from(html ? "<title>Café</title><p>Crème brûlée</p>" : "Crème brûlée", encoding));
+    });
+    const page = await fetchReadablePage("http://public.example/");
+    assert.equal(page.title, html ? "Café" : undefined);
+    assert.equal(page.content, html ? "Café\n\nCrème brûlée" : "Crème brûlée");
+  });
+}
+
 for (const contentType of ["application/pdf", "image/png", "application/octet-stream", "application/json", ""]) {
   test(`fetch rejects unsupported Content-Type ${contentType || "empty"} before reading its body`, async (t) => {
     t.mock.method(dns, "lookup", async () => approved);
