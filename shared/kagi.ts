@@ -1,4 +1,5 @@
 import { parseUnambiguousJson } from "./json.js";
+import { hasUnpairedSurrogate } from "./text.js";
 import { EmptyResponseReadLimitError, MAX_CONSECUTIVE_EMPTY_READS, USER_AGENT } from "./http.js";
 
 const KAGI_API_URL = "https://kagi.com/api/v0/search";
@@ -38,11 +39,13 @@ export const KAGI_LIMIT_MAX = 20;
 export const KAGI_LIMIT_DEFAULT = 10;
 export const KAGI_QUERY_MAX_BYTES = 8192;
 
-/** Admit submitted UTF-8 bytes before trimming, progress or URL construction. */
+/** Admit Unicode scalar text within the UTF-8 byte limit before trimming, progress or URL construction. */
 export function admitKagiQuery(query: string): void {
-  if (query.length > KAGI_QUERY_MAX_BYTES || Buffer.byteLength(query, "utf8") > KAGI_QUERY_MAX_BYTES) {
-    throw new Error(`Kagi query exceeds the ${KAGI_QUERY_MAX_BYTES}-byte UTF-8 limit.`);
+  if (query.length <= KAGI_QUERY_MAX_BYTES) {
+    if (hasUnpairedSurrogate(query)) throw new Error("Kagi query must be valid Unicode text.");
+    if (Buffer.byteLength(query, "utf8") <= KAGI_QUERY_MAX_BYTES) return;
   }
+  throw new Error(`Kagi query exceeds the ${KAGI_QUERY_MAX_BYTES}-byte UTF-8 limit.`);
 }
 
 /** The single Kagi result-limit policy: round to an integer, then clamp to 1-20; non-finite values use the default. */

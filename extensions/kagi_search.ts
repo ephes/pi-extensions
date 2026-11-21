@@ -24,7 +24,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       "When the user needs page text after searching, follow up with web_content on a chosen result URL.",
     ],
     parameters: Type.Object({
-      query: Type.String({ description: `Search query (at most ${KAGI_QUERY_MAX_BYTES} UTF-8 bytes before trimming).` }),
+      query: Type.String({ description: `Valid Unicode search query (at most ${KAGI_QUERY_MAX_BYTES} UTF-8 bytes before trimming).` }),
       limit: Type.Optional(Type.Number({
         description: `Maximum number of results (${KAGI_LIMIT_MIN}-${KAGI_LIMIT_MAX}, default ${KAGI_LIMIT_DEFAULT}).`,
         minimum: KAGI_LIMIT_MIN,

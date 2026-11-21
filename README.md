@@ -117,10 +117,11 @@ export KAGI_API_KEY="your-api-key"
 
 The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default. The tool also caps retained rows at this count. It scans results in API order, skips rows with oversized URLs, and stops when the count is reached or the next usable row exceeds the remaining text budget. Each omitted row contributes to the truncation flag.
 
-Queries accept at most 8,192 UTF-8 bytes, including surrounding whitespace.
-The tool and shared `searchKagi` helper refuse larger inputs before progress or
-URL construction/fetch. The tool trims admitted queries and rejects empty ones;
-it sends the complete trimmed query to Kagi. Progress text and details retain
+Queries must contain only Unicode scalar values and fit within 8,192 UTF-8
+bytes, including surrounding whitespace. The tool and shared `searchKagi`
+helper reject unpaired surrogates and oversized inputs before progress or URL
+construction and fetch. The tool trims admitted queries, rejects empty ones,
+and sends the complete trimmed query to Kagi. Progress text and details retain
 only a 512-character query preview (including an ellipsis when shortened),
 without splitting surrogate pairs. The final query label and every other
 clipped field (titles, snippets, related searches, metadata) use the same
@@ -163,10 +164,11 @@ All three extensions project external terminal text through Pi TUI’s public `s
 Search and web result displays mark failed calls as failures with bounded diagnostics; an empty successful search remains “0 results”. Partial results retain their running status.
 
 Successful response JSON must have unique decoded member names and finite
-decoded numbers, including in optional extension fields. Each response admits
+decoded numbers. Decoded names and string values must contain only Unicode
+scalar values, including in optional extension fields. Each response admits
 up to 64 container levels, 16,384 objects/arrays, 16,384 object members, and
 16,384 array elements across all arrays. These limits apply before native JSON
-decoding. Duplicate keys (including escaped aliases), numeric or structural overflow, comments, trailing commas and malformed JSON yield one fixed safe parsing diagnostic before results are returned or rendered. Valid optional extension fields remain available within this envelope.
+decoding. Duplicate keys (including escaped aliases), unpaired surrogates, numeric or structural overflow, comments, trailing commas and malformed JSON yield one fixed safe parsing diagnostic before results are returned or rendered. Valid optional extension fields remain available within this envelope.
 
 The response must contain a `data` array of result items (`t: 0`, string `url` and `title`, optional string `snippet` and string or finite numeric `published`) or related-search items (`t: 1`, string-only `list`). Optional result and metadata scalars may also be `null` for absent values. Optional metadata must be an object with string `id`/`node` and finite numeric `ms`/`api_balance` when supplied. The shared `searchKagi` helper retains unknown extra fields after validation; the tool projects bounded metadata as described above. Unsupported item types and malformed fields fail with a controlled error.
 Result URLs must use an absolute `http://` or `https://` authority form, parse
@@ -282,7 +284,9 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - Parallel prompt/setup failures become per-task failures; started siblings finish and queued tasks continue unless explicitly cancelled. Results retain input order. Success counts, task summaries, display icons and the tool error flag use the same verdict; any failed task marks the batch as an error while retaining every result.
 
 Agent workflow stdout uses streaming, strict UTF-8 decoding, including the final
-line at EOF. Every nonblank line must be complete JSON with unique decoded object-member names and finite decoded numbers at every depth, including in ignored events. Each protocol line admits up to 128 container levels, 65,536 containers,
+line at EOF. Every nonblank line must be complete JSON with unique decoded object-member names and finite decoded numbers at every depth, including in ignored events.
+Decoded names and string values containing unpaired surrogates fail with the
+same bounded invalid-JSON diagnostic. Each protocol line admits up to 128 container levels, 65,536 containers,
 65,536 object members, and 65,536 array elements across all arrays before native
 JSON decoding. Duplicate names (including escaped aliases) and numeric or structural overflow fail through the same bounded invalid-JSON diagnostic. Comments and trailing commas are refused; malformed or incomplete
 JSON fails even after a completed answer. There is no supported non-JSON

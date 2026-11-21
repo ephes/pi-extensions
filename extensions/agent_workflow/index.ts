@@ -9,7 +9,7 @@ import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-a
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseUnambiguousJson } from "../../shared/json.js";
-import { clipText } from "../../shared/text.js";
+import { clipText, hasUnpairedSurrogate } from "../../shared/text.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
 import { resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
 
@@ -1010,11 +1010,9 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         // separate, existing 12,000-character allowance.
         const submitted = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, task: params.task!, cwd: params.cwd }];
         const submittedMode = hasChain ? "chain" : hasTasks ? "parallel" : "single";
-        // In Unicode mode paired surrogates match as one supplementary code point.
-        const unpairedSurrogate = /[\uD800-\uDFFF]/u;
         let inputBytes = 0;
         for (const item of submitted) {
-          if ([item.task, item.agent, item.cwd ?? ""].some(text => unpairedSurrogate.test(text))) {
+          if ([item.task, item.agent, item.cwd ?? ""].some(hasUnpairedSurrogate)) {
             return { isError: true, content: toolContent("Agent workflow input must be valid Unicode text."),
               details: makeDetails(submittedMode)([]) };
           }
