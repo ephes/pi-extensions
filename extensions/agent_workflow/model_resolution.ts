@@ -64,7 +64,7 @@ export function resolveAgentModel(
   };
 }
 
-const REVIEWER_MODEL = "openai-codex/gpt-6.1-sol";
+export const REVIEWER_MODEL = "openai-codex/gpt-6.2-sol";
 
 export function resolveReviewerModel(
   requestedModel: string | undefined,

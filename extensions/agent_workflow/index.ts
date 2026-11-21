@@ -11,7 +11,7 @@ import { Type } from "typebox";
 import { parseUnambiguousJson } from "../../shared/json.js";
 import { clipText, hasUnpairedSurrogate } from "../../shared/text.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
-import { resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
+import { REVIEWER_MODEL, resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
 
 const PROGRESS_FAILURE = new Error("Agent workflow progress delivery failed; retry the task.");
 
@@ -995,6 +995,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
 
         if (modeCount !== 1) {
           return {
+            isError: true,
             content: toolContent(`Invalid parameters. Available bundled agents: ${formatAgentList(agents)}`),
             details: makeDetails("single")([]),
           };
@@ -1031,7 +1032,7 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         if ((hasChain || hasTasks) && submitted.some(item => item.agent === "reviewer")) {
           const selection = reviewer
             ? resolveReviewerModel(reviewer.model, availableModels)
-            : { warning: "Bundled reviewer definition is unavailable; it must be discoverable and use openai-codex/gpt-6.1-sol." };
+            : { warning: `Bundled reviewer definition is unavailable; it must be discoverable and use ${REVIEWER_MODEL}.` };
           if (!selection.resolvedModel) {
             return { isError: true, content: toolContent(selection.warning ?? "Bundled reviewer model is unavailable."),
               details: makeDetails(hasChain ? "chain" : "parallel")([]) };
