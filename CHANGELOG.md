@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Size bundled definition read buffers to the admitted file length and remaining discovery budget, with one extra byte to detect growth or overflow.
+- Preserve the bundled definition discovery limit refusal if closing a file or directory also fails, discarding the entire inventory.
 
 - Reject Kagi queries with unpaired surrogates before progress or request URL construction.
 - Refuse unpaired surrogates in decoded JSON member names and string values in Kagi responses and agent workflow protocol lines.
