@@ -1583,6 +1583,32 @@ for (const [field, invalid] of [["task", "\uD800"], ["task", "\uDC00"], ["agent"
   });
 }
 
+for (const mode of ["single", "parallel"] as const) {
+  test(`${mode} input rejects an unpaired surrogate before staging`, async (t) => {
+    const { children, executeParams } = setup(t);
+    const mkdir = t.mock.method(fs, "mkdtempSync");
+    const write = t.mock.method(fs, "writeFileSync");
+    syncBuiltinESMExports();
+    const run = executeParams(mode === "single"
+      ? { agent: "implementer", task: "synthetic \uD800" }
+      : { tasks: [{ agent: "implementer", task: "first" }, { agent: "implementer", task: "synthetic \uDC00" }] });
+    // Let any unexpected children finish so the regression fails without hanging.
+    for (let index = 0; index < children.length; index++) {
+      children[index].stdout.emit("data", messageLine("answer"));
+      children[index].emit("close", 0, null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.deepEqual(result.content, [{ type: "text", text: "Agent workflow input must be valid Unicode text." }]);
+    assert.equal((result.details as typeof result.details & { mode?: string }).mode, mode);
+    assert.deepEqual(result.details.results, []);
+    assert.equal(mkdir.mock.callCount(), 0);
+    assert.equal(write.mock.callCount(), 0);
+    assert.equal(children.length, 0);
+  });
+}
+
 test("chain input preserves valid supplementary characters in staged tasks", async (t) => {
   const { children, execute, tasks } = setup(t);
   const run = execute(undefined, true, "review 😀 {previous}");
