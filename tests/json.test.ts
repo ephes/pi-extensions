@@ -12,6 +12,26 @@ test("strict JSON compares decoded names and keeps scopes separate", () => {
   assert.equal(Object.getPrototypeOf(result), Object.prototype);
 });
 
+test("strict JSON rejects unpaired surrogates in decoded member names", () => {
+  for (const key of [String.raw`"\uD800"`, String.raw`"x\uDFFF"`, '"\uD800x"']) {
+    assert.throws(() => parseUnambiguousJson(`{"extra":{ ${key}:0 }}`),
+      { message: "Invalid JSON structure." });
+  }
+});
+
+test("strict JSON rejects unpaired surrogates in decoded string values", () => {
+  for (const value of [String.raw`"\uD800"`, String.raw`"\uDFFFx"`, '"\uDFFF"']) {
+    assert.throws(() => parseUnambiguousJson(value), { message: "Invalid JSON structure." });
+    assert.throws(() => parseUnambiguousJson(`{"extra":[${value}]}`),
+      { message: "Invalid JSON structure." });
+  }
+});
+
+test("strict JSON admits literal and escaped supplementary characters", () => {
+  assert.deepEqual(parseUnambiguousJson(String.raw`{"𠮷":"\uD83D\uDE00","\uD83D\uDE00":"𠮷"}`),
+    { "𠮷": "😀", "😀": "𠮷" });
+});
+
 test("strict JSON rejects permissive parser syntax before returning data", () => {
   for (const text of ['', '/* comment */ {}', '{"x":1,}', '[1,]', '{"x":01}', '{"x":undefined}', '{} {}']) {
     assert.throws(() => parseUnambiguousJson(text));

@@ -1,4 +1,5 @@
 import { visit } from "jsonc-parser";
+import { hasUnpairedSurrogate } from "./text.js";
 
 /** Strict JSON admission via the parser's public visitor, before native decoding.
  * Key comparisons use decoded names, so escaped aliases cannot override members.
@@ -25,7 +26,7 @@ export function parseUnambiguousJson(
     onArrayBegin: () => begin(null),
     onObjectProperty: key => {
       const keys = stack.at(-1)!;
-      if (++objectMembers > maxObjectMembers || !keys || keys.has(key)) invalid();
+      if (++objectMembers > maxObjectMembers || !keys || hasUnpairedSurrogate(key) || keys.has(key)) invalid();
       keys.add(key);
     },
     onObjectEnd: () => { stack.pop(); },
@@ -33,6 +34,7 @@ export function parseUnambiguousJson(
     onLiteralValue: value => {
       countArrayElement();
       if (typeof value === "number" && !Number.isFinite(value)) invalid();
+      if (typeof value === "string" && hasUnpairedSurrogate(value)) invalid();
     },
     onError: invalid,
   }, { disallowComments: true, allowTrailingComma: false, allowEmptyContent: false });

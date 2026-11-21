@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refuse unpaired surrogates in decoded JSON member names and string values in Kagi responses and agent workflow protocol lines.
 - Reject already cancelled web fetches with the original abort reason before starting the deadline.
 - Fail Web and Kagi response reads after 256 consecutive empty chunks with a fixed retry diagnostic and cancel the incomplete body.
 - Clip agent workflow chain handoffs at Unicode scalar boundaries within the shared UTF-16 allowance.
