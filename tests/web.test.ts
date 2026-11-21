@@ -350,11 +350,17 @@ test("caller cancellation interrupts DNS immediately", async (t) => {
   await assert.rejects(pending, (error) => error === reason);
 });
 
-test("already cancelled caller does not resolve or connect", async (t) => {
+test("already cancelled caller does not start a deadline, resolve or connect", async (t) => {
+  const setTimeout = t.mock.method(globalThis, "setTimeout");
   const lookup = t.mock.method(dns, "lookup", () => { throw new Error("Unexpected DNS"); });
+  const fetch = t.mock.method(undici, "fetch", () => { throw new Error("Unexpected fetch"); });
   const reason = new Error("Cancelled before fetch");
   await assert.rejects(fetchReadablePage("http://public.example/", 20_000, AbortSignal.abort(reason)), (error) => error === reason);
+  const defaultAbort = AbortSignal.abort();
+  await assert.rejects(fetchReadablePage("http://public.example/", undefined, defaultAbort), (error) => error === defaultAbort.reason);
+  assert.equal(setTimeout.mock.callCount(), 0);
   assert.equal(lookup.mock.callCount(), 0);
+  assert.equal(fetch.mock.callCount(), 0);
 });
 
 for (const stage of ["headers", "body", "dripping body"] as const) {
@@ -609,6 +615,43 @@ test("caller cancellation interrupts a stalled plain-text body", async (t) => {
   controller.abort(reason);
   await rejected;
 });
+
+for (const overLimit of [false, true]) {
+  test(`web body bounds consecutive empty reads (over limit=${overLimit})`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const empty = new Uint8Array();
+    const chunks = [Uint8Array.of(65), ...Array<Uint8Array>(256).fill(empty), Uint8Array.of(66),
+      ...Array<Uint8Array>(overLimit ? 300 : 256).fill(empty)];
+    let reads = 0;
+    const reader = {
+      async read() {
+        const value = chunks[reads++];
+        return { done: value === undefined, value };
+      },
+      async cancel() {},
+      releaseLock() {},
+    };
+    const cancel = t.mock.method(reader, "cancel");
+    const release = t.mock.method(reader, "releaseLock");
+    t.mock.method(undici, "fetch", async () => ({
+      ok: true, status: 200, headers: new Headers({ "content-type": "text/plain" }),
+      body: { getReader: () => reader },
+    }));
+
+    const pending = fetchReadablePage("https://public.example/");
+    if (overLimit) {
+      await assert.rejects(pending, { message: "Response body exceeded the consecutive empty-read limit; retry the request." });
+      assert.equal(reads, 2 + 256 + 257);
+    } else {
+      const page = await pending;
+      assert.equal(page.content, "AB");
+      assert.equal(page.truncated, false);
+      assert.equal(reads, chunks.length + 1);
+    }
+    assert.equal(cancel.mock.callCount(), overLimit ? 1 : 0);
+    assert.equal(release.mock.callCount(), 1);
+  });
+}
 
 for (const size of [2 * 1024 * 1024 - 1, 2 * 1024 * 1024, 2 * 1024 * 1024 + 1]) {
   test(`source truncation reports omitted bytes at size ${size}`, async (t) => {
