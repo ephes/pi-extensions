@@ -9,6 +9,7 @@ import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-a
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseUnambiguousJson } from "../../shared/json.js";
+import { clipText } from "../../shared/text.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
 import { resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
 
@@ -471,8 +472,8 @@ function writeAgentInputFiles(agentName: string, prompt: string, task: string): 
 function truncatePreviousOutput(previousOutput: string, limit: number): string {
   if (previousOutput.length <= limit) return previousOutput;
   const notice = `[Previous agent workflow output truncated from ${previousOutput.length} to ${limit} characters.]\n\n`;
-  if (limit <= notice.length) return previousOutput.slice(0, limit);
-  return notice + previousOutput.slice(0, limit - notice.length);
+  if (limit <= notice.length) return clipText(previousOutput, limit);
+  return notice + clipText(previousOutput, limit - notice.length);
 }
 
 async function runSingleAgent(
@@ -1008,14 +1009,21 @@ export default function agentWorkflowExtension(pi: ExtensionAPI) {
         // System prompts count once per invocation; prepared chain context has its
         // separate, existing 12,000-character allowance.
         const submitted = hasChain ? params.chain! : hasTasks ? params.tasks! : [{ agent: params.agent!, task: params.task!, cwd: params.cwd }];
+        const submittedMode = hasChain ? "chain" : hasTasks ? "parallel" : "single";
+        // In Unicode mode paired surrogates match as one supplementary code point.
+        const unpairedSurrogate = /[\uD800-\uDFFF]/u;
         let inputBytes = 0;
         for (const item of submitted) {
+          if ([item.task, item.agent, item.cwd ?? ""].some(text => unpairedSurrogate.test(text))) {
+            return { isError: true, content: toolContent("Agent workflow input must be valid Unicode text."),
+              details: makeDetails(submittedMode)([]) };
+          }
           const taskBytes = Buffer.byteLength(item.task);
           inputBytes += taskBytes + Buffer.byteLength(agents.find(agent => agent.name === item.agent)?.systemPrompt ?? "");
           inputBytes += Buffer.byteLength(item.agent) + Buffer.byteLength(item.cwd ?? "");
           if (taskBytes > MAX_TASK_INPUT_BYTES || inputBytes > MAX_WORKFLOW_INPUT_BYTES) {
             return { isError: true, content: toolContent("Agent workflow input exceeds byte limit (1 MiB per task; 4 MiB total including system prompts and task labels)."),
-              details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]) };
+              details: makeDetails(submittedMode)([]) };
           }
         }
 

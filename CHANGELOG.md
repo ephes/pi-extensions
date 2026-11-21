@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Clip agent workflow chain handoffs at Unicode scalar boundaries within the shared UTF-16 allowance.
+- Reject unpaired surrogates in submitted workflow task text, agent names and working-directory labels before staging prompts.
 - Report already cancelled Kagi calls as `AbortError` before checking credentials or starting the deadline.
 - Bound total array elements before native JSON decoding to 16,384 per Kagi response and 65,536 per agent workflow protocol line.
 - Honor cancellation and the deadline during web dispatcher cleanup while preserving earlier fetch failures.
