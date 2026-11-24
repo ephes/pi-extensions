@@ -371,6 +371,30 @@ test("registered search omits untrustworthy Published metadata without losing us
   }
 });
 
+test("Kagi direct search rejects blank queries before network setup", async (t) => {
+  const queries: string[][] = [];
+  const fetch = t.mock.method(globalThis, "fetch", async (url: URL) => {
+    queries.push(url.searchParams.getAll("q"));
+    return Response.json(valid);
+  });
+  const timer = t.mock.method(globalThis, "setTimeout");
+
+  for (const key of ["test-key", undefined]) {
+    if (key === undefined) delete process.env.KAGI_API_KEY;
+    else process.env.KAGI_API_KEY = key;
+    for (const query of [" \t\n\u00a0 ", ""]) {
+      await assert.rejects(searchKagi(query), { message: "Query cannot be empty." });
+    }
+  }
+  assert.equal(timer.mock.callCount(), 0);
+  assert.equal(fetch.mock.callCount(), 0);
+
+  process.env.KAGI_API_KEY = "test-key";
+  const query = "Café 東京 &q=other+#";
+  assert.deepEqual(await searchKagi(`  ${query}  `), valid);
+  assert.deepEqual(queries, [[query]]);
+});
+
 test("Kagi refuses over-limit UTF-8 queries before progress or transport, including before trimming", async (t) => {
   const fetch = t.mock.method(globalThis, "fetch", async () => Response.json({ data: [] }));
   const progress: SearchProgress[] = [];

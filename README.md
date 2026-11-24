@@ -124,9 +124,10 @@ The `limit` parameter accepts 1–20 results (default 10). One shared policy rou
 
 Queries must contain only Unicode scalar values and fit within 8,192 UTF-8
 bytes, including surrounding whitespace. The tool and shared `searchKagi`
-helper reject unpaired surrogates and oversized inputs before progress or URL
-construction and fetch. The tool trims admitted queries, rejects empty ones,
-and sends the complete trimmed query to Kagi. Progress text and details retain
+helper validate the submitted text before trimming. Both reject empty or
+whitespace-only queries before credential lookup or network setup. The tool
+also checks the query before reporting progress. Kagi receives the complete
+trimmed query. Progress text and details retain
 only a 512-character query preview (including an ellipsis when shortened),
 without splitting surrogate pairs. The final query label and every other
 clipped field (titles, snippets, related searches, metadata) use the same
@@ -269,6 +270,7 @@ AGENTS.md           Repo-specific developer guidance for coding agents
 - `web_content` validates and pins DNS answers for each redirect target (including IPv4/IPv6 fallback), preserves the original Host/TLS name, blocks private/local IP ranges, and enforces a streaming fetch-size limit before extraction.
 - `web_content` requires the final response to be HTTP 200 with no Content-Range header. Other successful statuses and any Content-Range header cause it to cancel the body before reading it.
 - `web_content` accepts `text/html`, `application/xhtml+xml`, and `text/plain` (case-insensitive, with optional parameters). HTML is extracted. Plain text preserves whitespace, angle brackets and entity spellings. Missing Content-Type uses HTML extraction for compatibility. An empty or unsupported type (including PDF, images and JSON) fails before reading the body with a bounded format error. A supported Content-Type `charset` selects the Node.js text decoder. Missing, invalid or unsupported charset labels use UTF-8. The same fetch/output limits, truncation flags, deadline and cancellation apply to all supported types.
+- `web_content` takes the title and readable text from the same parsed HTML document. The first title in the document head supplies the heading after whitespace normalization. With no usable head title, the heading is “Page content”. For `application/xhtml+xml`, self-closing non-void elements such as `<script/>` or `<nav/>` are closed in place before parsing, so they cannot swallow the rest of the page.
 - `web_content` decodes HTML entities once in extracted titles and body text, including named and numeric Unicode references. Escaped literals such as `&amp;lt;` remain `&lt;`; malformed references follow HTML decoding rules.
 - `web_content` displays URLs without userinfo, query parameters or fragments in progress, call previews, output URL labels and fetch diagnostics. The full URL remains available for transport and final machine-readable result details. Transport/body failures use controlled diagnostics without raw upstream error chains; URL privacy does not redact fetched page content.
 - `web_content` marks source truncation only when response bytes were actually omitted. An exactly full 2 MiB response is complete after EOF; waiting for EOF or an overflow byte still obeys the same deadline and caller cancellation.

@@ -1,6 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { decodeHtml, extractTitle, extractReadableText, isBlockedIp, validateUrl } from "../shared/web.js";
+import { decodeHtml, expandXhtmlSelfClosingTags, extractTitle, extractReadableText, isBlockedIp, validateUrl } from "../shared/web.js";
 
 test("isBlockedIp blocks private, loopback, and mapped IPv4 ranges", () => {
   const blocked = [
@@ -508,6 +508,53 @@ for (const contentType of ["text/html", "application/xhtml+xml; charset=UTF-8", 
     assert.equal(page.truncated, false);
   });
 }
+
+test("web tool takes its heading from the parsed document head", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const decoys = '<!-- <title>Comment</title> --><script>const title = "<title>Script</title>";</script>';
+  const body = "<body><p>Readable body</p><svg><title>Graphic</title></svg><title>Body title</title></body>";
+  const html = [
+    `<head>${decoys}<title>  Real &amp; title&nbsp;  here </title></head>${body}`,
+    `<head>${decoys}</head>${body}`,
+  ];
+  const fetch = t.mock.method(undici, "fetch", async () => new undici.Response(html.shift(), {
+    headers: { "content-type": "text/html" },
+  }));
+  const { default: extension } = await import("../extensions/web_content.js");
+  type Result = { content: Array<{ text: string }>; details: { title?: string } };
+  let execute!: (id: string, params: { url: string }) => Promise<Result>;
+  extension({ registerTool(tool: { execute: typeof execute }) { execute = tool.execute; } } as never);
+
+  for (const [title, heading] of [["Real & title here", "Real & title here"], [undefined, "Page content"]] as const) {
+    const result = await execute("test", { url: "http://public.example/" });
+    assert.equal(result.details.title, title);
+    assert.equal(result.content[0].text.split("\n", 1)[0], `# ${heading}`);
+    assert.match(result.content[0].text, /Readable body/);
+  }
+  assert.equal(fetch.mock.callCount(), 2);
+});
+
+test("fetch closes self-closing XHTML elements before HTML parsing", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const xhtml = '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>X</title><script src="a.js"/>'
+    + '<style type="text/css" /></head><body><nav/><iframe src="b"/><p>Body <br/>text</p><textarea/>'
+    + "<p>More</p></body></html>";
+  await fixture(t, (_request, response) => {
+    response.setHeader("content-type", "application/xhtml+xml");
+    response.end(xhtml);
+  });
+  const page = await fetchReadablePage("http://public.example/");
+  assert.equal(page.title, "X");
+  assert.equal(page.content, "X\n\nBody\n\ntext\n\nMore");
+});
+
+test("XHTML self-closing expansion keeps void elements and stays linear", () => {
+  assert.equal(expandXhtmlSelfClosingTags('<br/><IMG src="a"/><div class="x"/>'), '<br/><IMG src="a"/><div class="x"></div>');
+  const started = performance.now();
+  expandXhtmlSelfClosingTags("<a ".repeat(500_000));
+  expandXhtmlSelfClosingTags("<a".repeat(500_000));
+  assert.ok(performance.now() - started < 2_000);
+});
 
 for (const contentType of ["text/plain", "Text/Plain; charset=UTF-8"]) {
   test(`fetch preserves plain text verbatim for ${contentType}`, async (t) => {

@@ -3,6 +3,7 @@ import { decodeHTML } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
 import { MIMEType } from "node:util";
+import { defaultTreeAdapter, parse, type DefaultTreeAdapterTypes } from "parse5";
 import undici, { Agent, type Response } from "undici";
 import { EmptyResponseReadLimitError, MAX_CONSECUTIVE_EMPTY_READS, USER_AGENT } from "./http.js";
 import { clipText } from "./text.js";
@@ -21,12 +22,11 @@ const MAX_REDIRECTS = 5;
 const FETCH_DEADLINE_MS = 30_000;
 const DISPATCHER_CLEANUP_MS = 100;
 
-const reComments = /<!--[\s\S]*?-->/g;
-const reNoise = /<(script|style|noscript|svg|iframe|nav|header|footer|aside)[^>]*>[\s\S]*?<\/\1>/gi;
-const reBlocks = /<\/?(p|div|section|article|main|h[1-6]|li|ul|ol|blockquote|pre|tr|table|hr|br)[^>]*>/gi;
-const reTags = /<[^>]+>/g;
-const reMultiNl = /\n{3,}/g;
-const reTitle = /<title[^>]*>(.*?)<\/title>/is;
+const noiseTags = new Set(["script", "style", "noscript", "svg", "iframe", "nav", "header", "footer", "aside", "template"]);
+const blockTags = new Set([
+  "p", "div", "section", "article", "main", "h1", "h2", "h3", "h4", "h5", "h6",
+  "li", "ul", "ol", "blockquote", "pre", "tr", "table", "hr", "br",
+]);
 
 // Human-visible URLs never include access credentials or signed parameters.
 export function displayUrl(rawUrl: string): string {
@@ -127,8 +127,9 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
         if (error instanceof EmptyResponseReadLimitError) throw error;
         throw new Error(`Unable to read response from ${displayUrl(currentUrl.toString())}; retry the request.`);
       });
-      const title = mediaType === "text/plain" ? undefined : extractTitle(text);
-      const extracted = mediaType === "text/plain" ? text : extractReadableText(text);
+      const { title, content: extracted } = mediaType === "text/plain"
+        ? { title: undefined, content: text }
+        : extractReadableHtml(mediaType === "application/xhtml+xml" ? expandXhtmlSelfClosingTags(text) : text);
 
       if (!extracted.trim()) {
         throw new Error(`Could not extract readable content from ${displayUrl(currentUrl.toString())}`);
@@ -268,29 +269,77 @@ export function isBlockedIp(ip: string): boolean {
   return false;
 }
 
+type HtmlParent = DefaultTreeAdapterTypes.ParentNode;
+
+const voidTags = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+]);
+// The attribute scan stops at the next "<" or ">", so matching stays linear on hostile input.
+const reSelfClosingTag = /<([A-Za-z][A-Za-z0-9:_.-]*)([^<>]*?)\/>/g;
+
+/**
+ * XHTML closes `<script/>`, `<nav/>` and similar elements in place, but the HTML parser would
+ * open them and let them swallow the rest of the document. Write explicit end tags first.
+ */
+export function expandXhtmlSelfClosingTags(xhtml: string): string {
+  return xhtml.replace(reSelfClosingTag, (tag, name: string, attributes: string) =>
+    voidTags.has(name.toLowerCase()) ? tag : `<${name}${attributes}></${name}>`);
+}
+
+function findHtmlChild(parent: HtmlParent | undefined, tagName: string) {
+  return parent?.childNodes.find(
+    (node): node is DefaultTreeAdapterTypes.Element => defaultTreeAdapter.isElementNode(node) && node.tagName === tagName,
+  );
+}
+
+function findTitleElement(document: DefaultTreeAdapterTypes.Document) {
+  const html = findHtmlChild(document, "html");
+  return findHtmlChild(findHtmlChild(html, "head"), "title");
+}
+
+function readTitle(element: DefaultTreeAdapterTypes.Element | undefined): string | undefined {
+  // An HTML title contains only parsed text. Entity references are already decoded.
+  const text = element?.childNodes.filter(defaultTreeAdapter.isTextNode).map(node => node.value).join("");
+  return text ? cleanLine(text) || undefined : undefined;
+}
+
 export function extractTitle(html: string): string | undefined {
-  const match = html.match(reTitle);
-  if (!match?.[1]) {
-    return undefined;
-  }
-  const title = cleanLine(decodeHtml(match[1]));
-  return title || undefined;
+  return readTitle(findTitleElement(parse(html)));
 }
 
 export function extractReadableText(html: string): string {
-  let text = html.replace(reComments, " ");
-  text = text.replace(reNoise, "\n");
-  text = text.replace(reBlocks, "\n");
-  text = text.replace(reTags, " ");
-  text = decodeHtml(text);
-  text = text.replace(/\r/g, "");
+  return extractReadableHtml(html).content;
+}
 
-  const lines = text
-    .split("\n")
-    .map((line) => cleanLine(line))
-    .filter(Boolean);
+function extractReadableHtml(html: string): { title?: string; content: string } {
+  const document = parse(html);
+  const titleElement = findTitleElement(document);
+  const parts: string[] = [];
+  // Walk iteratively so deeply nested markup does not consume the call stack.
+  const pending: Array<DefaultTreeAdapterTypes.ChildNode | string> = [...document.childNodes].reverse();
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (typeof node === "string") {
+      parts.push(node);
+    } else if (defaultTreeAdapter.isTextNode(node)) {
+      parts.push(node.value);
+    } else if (defaultTreeAdapter.isElementNode(node)) {
+      const { tagName, childNodes } = node;
+      if (noiseTags.has(tagName) || (tagName === "title" && node !== titleElement)) {
+        parts.push("\n");
+        continue;
+      }
+      const separator = blockTags.has(tagName) ? "\n" : " ";
+      parts.push(separator);
+      pending.push(separator);
+      for (let i = childNodes.length - 1; i >= 0; i--) pending.push(childNodes[i]);
+    } else if (defaultTreeAdapter.isCommentNode(node)) {
+      parts.push(" ");
+    }
+  }
 
-  return lines.join("\n\n").replace(reMultiNl, "\n\n").trim();
+  const content = parts.join("").replace(/\r/g, "").split("\n").map(cleanLine).filter(Boolean).join("\n\n");
+  return { title: readTitle(titleElement), content };
 }
 
 export function decodeHtml(value: string): string {
