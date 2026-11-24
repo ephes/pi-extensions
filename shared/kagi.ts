@@ -39,13 +39,15 @@ export const KAGI_LIMIT_MAX = 20;
 export const KAGI_LIMIT_DEFAULT = 10;
 export const KAGI_QUERY_MAX_BYTES = 8192;
 
-/** Admit Unicode scalar text within the UTF-8 byte limit before trimming, progress or URL construction. */
-export function admitKagiQuery(query: string): void {
-  if (query.length <= KAGI_QUERY_MAX_BYTES) {
-    if (hasUnpairedSurrogate(query)) throw new Error("Kagi query must be valid Unicode text.");
-    if (Buffer.byteLength(query, "utf8") <= KAGI_QUERY_MAX_BYTES) return;
-  }
-  throw new Error(`Kagi query exceeds the ${KAGI_QUERY_MAX_BYTES}-byte UTF-8 limit.`);
+/** Validate the submitted text and return a nonblank, trimmed query. */
+export function admitKagiQuery(query: string): string {
+  const exceedsByteLimit = () => new Error(`Kagi query exceeds the ${KAGI_QUERY_MAX_BYTES}-byte UTF-8 limit.`);
+  if (query.length > KAGI_QUERY_MAX_BYTES) throw exceedsByteLimit();
+  if (hasUnpairedSurrogate(query)) throw new Error("Kagi query must be valid Unicode text.");
+  if (Buffer.byteLength(query, "utf8") > KAGI_QUERY_MAX_BYTES) throw exceedsByteLimit();
+  const trimmed = query.trim();
+  if (!trimmed) throw new Error("Query cannot be empty.");
+  return trimmed;
 }
 
 /** The single Kagi result-limit policy: round to an integer, then clamp to 1-20; non-finite values use the default. */
@@ -173,11 +175,11 @@ function kagiCancelledError(): Error {
 
 export async function searchKagi(query: string, limit?: number, signal?: AbortSignal): Promise<KagiSearchResponse> {
   if (signal?.aborted) throw kagiCancelledError();
-  admitKagiQuery(query);
+  const admittedQuery = admitKagiQuery(query);
   const apiKey = getKagiApiKey();
   const normalizedLimit = normalizeKagiLimit(limit);
   const url = new URL(KAGI_API_URL);
-  url.searchParams.set("q", query);
+  url.searchParams.set("q", admittedQuery);
   url.searchParams.set("limit", String(normalizedLimit));
 
   const controller = new AbortController();

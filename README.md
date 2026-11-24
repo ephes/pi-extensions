@@ -124,9 +124,10 @@ The `limit` parameter accepts 1–20 results (default 10). One shared policy rou
 
 Queries must contain only Unicode scalar values and fit within 8,192 UTF-8
 bytes, including surrounding whitespace. The tool and shared `searchKagi`
-helper reject unpaired surrogates and oversized inputs before progress or URL
-construction and fetch. The tool trims admitted queries, rejects empty ones,
-and sends the complete trimmed query to Kagi. Progress text and details retain
+helper validate the submitted text before trimming. Both reject empty or
+whitespace-only queries before credential lookup or network setup. The tool
+also checks the query before reporting progress. Kagi receives the complete
+trimmed query. Progress text and details retain
 only a 512-character query preview (including an ellipsis when shortened),
 without splitting surrogate pairs. The final query label and every other
 clipped field (titles, snippets, related searches, metadata) use the same

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject empty or whitespace-only Kagi queries before credential lookup or network setup in both the tool and the shared search helper.
+
 - Derive the `web_content` heading from the parsed document head so title-like markup in comments, scripts or the body cannot replace it.
 
 - Count every Kagi related-search term while collecting only the retained prefix.

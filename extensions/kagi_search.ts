@@ -33,11 +33,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
     }),
 
     async execute(_toolCallId, params, signal, onUpdate) {
-      admitKagiQuery(params.query);
-      const query = params.query.trim();
-      if (!query) {
-        throw new Error("Query cannot be empty.");
-      }
+      const query = admitKagiQuery(params.query);
 
       const limit = normalizeKagiLimit(params.limit);
       const preview = shorten(query, 512);
