@@ -129,7 +129,7 @@ async function fetchPage(rawUrl: string, maxChars: number, signal: AbortSignal):
       });
       const { title, content: extracted } = mediaType === "text/plain"
         ? { title: undefined, content: text }
-        : extractReadableHtml(text);
+        : extractReadableHtml(mediaType === "application/xhtml+xml" ? expandXhtmlSelfClosingTags(text) : text);
 
       if (!extracted.trim()) {
         throw new Error(`Could not extract readable content from ${displayUrl(currentUrl.toString())}`);
@@ -270,6 +270,21 @@ export function isBlockedIp(ip: string): boolean {
 }
 
 type HtmlParent = DefaultTreeAdapterTypes.ParentNode;
+
+const voidTags = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
+]);
+// The attribute scan stops at the next "<" or ">", so matching stays linear on hostile input.
+const reSelfClosingTag = /<([A-Za-z][A-Za-z0-9:_.-]*)([^<>]*?)\/>/g;
+
+/**
+ * XHTML closes `<script/>`, `<nav/>` and similar elements in place, but the HTML parser would
+ * open them and let them swallow the rest of the document. Write explicit end tags first.
+ */
+export function expandXhtmlSelfClosingTags(xhtml: string): string {
+  return xhtml.replace(reSelfClosingTag, (tag, name: string, attributes: string) =>
+    voidTags.has(name.toLowerCase()) ? tag : `<${name}${attributes}></${name}>`);
+}
 
 function findHtmlChild(parent: HtmlParent | undefined, tagName: string) {
   return parent?.childNodes.find(
