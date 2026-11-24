@@ -509,6 +509,31 @@ for (const contentType of ["text/html", "application/xhtml+xml; charset=UTF-8", 
   });
 }
 
+test("web tool takes its heading from the parsed document head", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const decoys = '<!-- <title>Comment</title> --><script>const title = "<title>Script</title>";</script>';
+  const body = "<body><p>Readable body</p><svg><title>Graphic</title></svg><title>Body title</title></body>";
+  const html = [
+    `<head>${decoys}<title>  Real &amp; title&nbsp;  here </title></head>${body}`,
+    `<head>${decoys}</head>${body}`,
+  ];
+  const fetch = t.mock.method(undici, "fetch", async () => new undici.Response(html.shift(), {
+    headers: { "content-type": "text/html" },
+  }));
+  const { default: extension } = await import("../extensions/web_content.js");
+  type Result = { content: Array<{ text: string }>; details: { title?: string } };
+  let execute!: (id: string, params: { url: string }) => Promise<Result>;
+  extension({ registerTool(tool: { execute: typeof execute }) { execute = tool.execute; } } as never);
+
+  for (const [title, heading] of [["Real & title here", "Real & title here"], [undefined, "Page content"]] as const) {
+    const result = await execute("test", { url: "http://public.example/" });
+    assert.equal(result.details.title, title);
+    assert.equal(result.content[0].text.split("\n", 1)[0], `# ${heading}`);
+    assert.match(result.content[0].text, /Readable body/);
+  }
+  assert.equal(fetch.mock.callCount(), 2);
+});
+
 for (const contentType of ["text/plain", "Text/Plain; charset=UTF-8"]) {
   test(`fetch preserves plain text verbatim for ${contentType}`, async (t) => {
     const text = "  2 < 3 and 4 > 1\n<title>literal</title> &amp; café\r\n";

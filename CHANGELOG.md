@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Derive the `web_content` heading from the parsed document head so title-like markup in comments, scripts or the body cannot replace it.
+
 - Count every Kagi related-search term while collecting only the retained prefix.
 - Preserve complete Unicode characters when clipping `web_content` terminal previews.
 
