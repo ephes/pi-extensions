@@ -476,6 +476,45 @@ test("registered search bounds retained text, related terms and metadata below t
   assert.deepEqual(Object.keys(result.details.meta!).sort(), ["api_balance", "id", "ms", "node"]);
 });
 
+test("registered search counts all related terms without flattening the response", async (t) => {
+  const rows = Array.from({ length: 200 }, (_, row) => ({
+    t: 1,
+    list: Array.from({ length: 4 }, (_, term) => `term-${row}-${term}`),
+  }));
+  let url = "https://example.test/";
+  t.mock.method(globalThis, "fetch", async () => Response.json({
+    data: [{ t: 1, list: [] }, ...rows, { t: 0, url, title: "Result" }],
+  }));
+  const flatMap = Array.prototype.flatMap;
+  let flattenedRelatedRows = false;
+  // Keep the result assertions behavior-based and detect the extra array separately.
+  t.after(() => { Array.prototype.flatMap = flatMap; });
+  Array.prototype.flatMap = new Proxy(flatMap, {
+    apply(target, receiver, args) {
+      if (Array.isArray(receiver) && receiver.length > rows.length && receiver[0]?.t === 1) {
+        flattenedRelatedRows = true;
+      }
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  const tool = registeredSearch();
+  const retained = await tool.execute("test", { query: "query" }, undefined, undefined);
+  assert.equal(retained.details.originalRelatedCount, 800);
+  assert.equal(retained.details.relatedCount, 10);
+  assert.equal(retained.details.truncated, true);
+  assert.deepEqual(retained.content[0].text.match(/^- .+$/gm),
+    [...rows[0].list, ...rows[1].list, ...rows[2].list.slice(0, 2)].map((term) => `- ${term}`));
+
+  url += "x".repeat(2048);
+  const omitted = await tool.execute("test", { query: "query" }, undefined, undefined);
+  assert.equal(omitted.details.originalRelatedCount, 800);
+  assert.equal(omitted.details.relatedCount, 0);
+  assert.equal(omitted.details.resultCount, 0);
+  assert.equal(omitted.details.truncated, true);
+  assert.match(omitted.content[0].text, /^No results retained.*\n\n\[Search output truncated\.\]$/);
+  assert.equal(flattenedRelatedRows, false, "related rows must not be flattened into a response-sized array");
+});
+
 test("registered search clips astral text at every cap without leaving a lone surrogate", async (t) => {
   const astral = (codeUnits: number) => "😀".repeat(codeUnits / 2 + 8);
   t.mock.method(globalThis, "fetch", async () => Response.json({

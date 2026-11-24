@@ -49,7 +49,6 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
 
       const response = await searchKagi(query, limit, signal);
       const results = response.data.filter((item) => item.t === 0);
-      const related = response.data.filter((item) => item.t === 1).flatMap((item) => item.list);
       let truncated = false;
       const clip = (text: string, max: number) => {
         if (text.length <= max) return text;
@@ -89,8 +88,18 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         urls.push(result.url);
       }
 
-      const retainedRelated = urls.length ? related.slice(0, RELATED_MAX_COUNT).map((term) => clip(term, 128)) : [];
-      if (retainedRelated.length < related.length) truncated = true;
+      const retainedRelated: string[] = [];
+      let originalRelatedCount = 0;
+      for (const item of response.data) {
+        if (item.t !== 1) continue;
+        originalRelatedCount += item.list.length;
+        if (!urls.length) continue;
+        const take = Math.min(item.list.length, RELATED_MAX_COUNT - retainedRelated.length);
+        for (let i = 0; i < take; i++) {
+          retainedRelated.push(clip(item.list[i], 128));
+        }
+      }
+      if (retainedRelated.length < originalRelatedCount) truncated = true;
       if (retainedRelated.length) {
         lines.push("Related searches:", ...retainedRelated.map((term) => `- ${term}`));
       }
@@ -106,7 +115,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
           resultCount: urls.length,
           relatedCount: retainedRelated.length,
           originalResultCount: results.length,
-          originalRelatedCount: related.length,
+          originalRelatedCount,
           truncated,
           meta,
           urls,
