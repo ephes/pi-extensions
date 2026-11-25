@@ -479,7 +479,7 @@ test("registered search bounds retained text, related terms and metadata below t
   const payload = {
     data: [
       ...Array.from({ length: 30 }, (_, i) => ({ t: 0, url: `https://example.com/${i}`, title: "T".repeat(2048), snippet: "S".repeat(8192), published: "P".repeat(2048) })),
-      { t: 1, list: Array.from({ length: 40 }, () => "R".repeat(4096)) },
+      { t: 1, list: Array.from({ length: 40 }, (_, i) => "R".repeat(4096) + i) },
     ],
     meta: { id: "I".repeat(120000), node: "N".repeat(120000), ms: 1, api_balance: 2, extra: "DROP-ME".repeat(10000) },
   };
@@ -565,6 +565,28 @@ test("registered search counts all related terms without flattening the response
   assert.equal(omitted.details.truncated, true);
   assert.match(omitted.content[0].text, /^No results retained.*\n\n\[Search output truncated\.\]$/);
   assert.equal(flattenedRelatedRows, false, "related rows must not be flattened into a response-sized array");
+});
+
+test("registered search retains the first ten exact distinct related terms across lists", async (t) => {
+  const first = ["alpha", "Alpha", "beta", "gamma", "delta", "epsilon"];
+  const later = ["zeta", "eta", "theta", "iota"];
+  const second = ["alpha", "beta", "alpha", ...later];
+  const url = "https://example.test/result";
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [
+    { t: 1, list: first },
+    { t: 0, url, title: "Result" },
+    { t: 1, list: second },
+  ] }));
+
+  const result = await registeredSearch().execute("test", { query: "query" }, undefined, undefined);
+  assert.deepEqual(result.content[0].text.match(/^- .+$/gm), [...first, ...later].map((term) => `- ${term}`));
+  assert.equal(result.details.originalRelatedCount, first.length + second.length);
+  assert.equal(result.details.relatedCount, 10);
+  assert.equal(result.details.resultCount, 1);
+  assert.equal(result.details.originalResultCount, 1);
+  assert.deepEqual(result.details.urls, [url]);
+  assert.equal(result.details.truncated, true);
+  assert.match(result.content[0].text, /\[Search output truncated\.\]$/);
 });
 
 test("registered search clips astral text at every cap without leaving a lone surrogate", async (t) => {

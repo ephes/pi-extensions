@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Cap complete Kagi search text at 24,000 UTF-16 code units, reserving space for the query label, related searches, and truncation notice while preserving whole result rows.
+- Keep the first occurrence of each exact Kagi related term before applying the retained count, with duplicates still included in the original count.
 
 - Reject empty or whitespace-only Kagi queries before credential lookup or network setup in both the tool and the shared search helper.
 

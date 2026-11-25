@@ -68,13 +68,16 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
       }
 
       const retainedRelated: string[] = [];
+      const seenRelated = new Set<string>();
       let originalRelatedCount = 0;
       for (const item of response.data) {
         if (item.t !== 1) continue;
         originalRelatedCount += item.list.length;
-        const take = Math.min(item.list.length, RELATED_MAX_COUNT - retainedRelated.length);
-        for (let i = 0; i < take; i++) {
-          retainedRelated.push(clip(item.list[i], 128));
+        for (const term of item.list) {
+          if (retainedRelated.length === RELATED_MAX_COUNT) break;
+          if (seenRelated.has(term)) continue;
+          seenRelated.add(term);
+          retainedRelated.push(clip(term, 128));
         }
       }
       const heading = `# Kagi search: ${retainedQuery}`;
