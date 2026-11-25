@@ -100,6 +100,13 @@ test("extractReadableText removes scripts and preserves readable text blocks", (
   assert.doesNotMatch(text, /color: red/);
 });
 
+test("HTML comments preserve adjacent words, explicit spaces and structural boundaries", () => {
+  const html = "<p>co<!-- marker -->de and two <!-- marker -->words</p>"
+    + "<!-- between paragraphs --><p>Next paragraph</p>"
+    + "<table><tr><td>One</td><!-- between cells --><td>Two</td></tr></table>";
+  assert.equal(extractReadableText(html), "code and two words\n\nNext paragraph\n\nOne Two");
+});
+
 test("readable HTML preserves inline adjacency and structural boundaries", async (t) => {
   t.mock.method(dns, "lookup", async () => approved);
   const html = "<head><title>Fixture</title></head><body>Intro"
@@ -118,7 +125,7 @@ test("readable HTML preserves inline adjacency and structural boundaries", async
   const page = await fetchReadablePage("http://public.example/");
   assert.equal(page.title, "Fixture");
   assert.equal(page.content, [
-    "Fixture Intro",
+    "Intro",
     "unbroken code AB12, 12.50 and two words",
     "Next line",
     "Another line",
@@ -576,7 +583,7 @@ for (const contentType of ["text/html", "application/xhtml+xml; charset=UTF-8", 
 test("web tool takes its heading from the parsed document head", async (t) => {
   t.mock.method(dns, "lookup", async () => approved);
   const decoys = '<!-- <title>Comment</title> --><script>const title = "<title>Script</title>";</script>';
-  const body = "<body><p>Readable body</p><svg><title>Graphic</title></svg><title>Body title</title></body>";
+  const body = "<body><h1>Visible heading</h1><p>Readable body</p><svg><title>Graphic</title></svg><title>Body title</title></body>";
   const html = [
     `<head>${decoys}<title>  Real &amp; title&nbsp;  here </title></head>${body}`,
     `<head>${decoys}</head>${body}`,
@@ -592,10 +599,21 @@ test("web tool takes its heading from the parsed document head", async (t) => {
   for (const [title, heading] of [["Real & title here", "Real & title here"], [undefined, "Page content"]] as const) {
     const result = await execute("test", { url: "http://public.example/" });
     assert.equal(result.details.title, title);
-    assert.equal(result.content[0].text.split("\n", 1)[0], `# ${heading}`);
-    assert.match(result.content[0].text, /Readable body/);
+    assert.equal(result.content[0].text, `# ${heading}\n\nURL: http://public.example/\n\nVisible heading\n\nReadable body`);
   }
   assert.equal(fetch.mock.callCount(), 2);
+});
+
+test("fetch rejects HTML with a title and no readable body text", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const html = "<title>Metadata only</title><body></body>";
+  t.mock.method(undici, "fetch", async () => new undici.Response(html, {
+    headers: { "content-type": "text/html" },
+  }));
+
+  await assert.rejects(fetchReadablePage("http://public.example/"), {
+    message: "Could not extract readable content from http://public.example/",
+  });
 });
 
 test("fetch closes self-closing XHTML elements before HTML parsing", async (t) => {
@@ -609,7 +627,7 @@ test("fetch closes self-closing XHTML elements before HTML parsing", async (t) =
   });
   const page = await fetchReadablePage("http://public.example/");
   assert.equal(page.title, "X");
-  assert.equal(page.content, "X\n\nBody\n\ntext\n\nMore");
+  assert.equal(page.content, "Body\n\ntext\n\nMore");
 });
 
 test("fetch normalizes quoted XHTML tags and preserves literal CDATA", async (t) => {
@@ -627,7 +645,9 @@ test("fetch normalizes quoted XHTML tags and preserves literal CDATA", async (t)
   assert.match(page.content, /After script/);
   assert.match(page.content, /literal <sample\/> text/);
 
-  assert.equal((await fetchReadablePage("http://public.example/")).content, "Example");
+  await assert.rejects(fetchReadablePage("http://public.example/"), {
+    message: "Could not extract readable content from http://public.example/",
+  });
 });
 
 for (const [point, attrs] of [
@@ -791,7 +811,7 @@ for (const { contentType, mediaType, encoding } of [
     });
     const page = await fetchReadablePage("http://public.example/");
     assert.equal(page.title, html ? "Café" : undefined);
-    assert.equal(page.content, html ? "Café\n\nCrème brûlée" : "Crème brûlée");
+    assert.equal(page.content, "Crème brûlée");
   });
 }
 
