@@ -1,5 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { defaultTreeAdapter } from "parse5";
 import { decodeHtml, expandXhtmlSelfClosingTags, extractTitle, extractReadableText, isBlockedIp, validateUrl } from "../shared/web.js";
 
 test("isBlockedIp blocks private, loopback, and mapped IPv4 ranges", () => {
@@ -133,6 +134,34 @@ test("readable HTML preserves inline adjacency and structural boundaries", async
     "Blue",
   ].join("\n\n"));
 });
+
+for (const cancel of [false, true]) {
+  test(`readable fetch checks elapsed time after extraction (caller cancelled=${cancel})`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let now = 100;
+    t.mock.method(performance, "now", () => now);
+    t.mock.method(dns, "lookup", async () => approved);
+    const caller = new AbortController();
+    const reason = new Error("caller cancelled during extraction");
+    t.mock.method(undici, "fetch", async () => new undici.Response("<p>Fixture text</p>", {
+      headers: { "content-type": "text/html" },
+    }));
+    const { isTextNode } = defaultTreeAdapter;
+    t.mock.method(defaultTreeAdapter, "isTextNode", (node: Parameters<typeof isTextNode>[0]) => {
+      const isText = isTextNode(node);
+      if (isText && node.value === "Fixture text") {
+        now = 30_100;
+        if (cancel) caller.abort(reason);
+      }
+      return isText;
+    });
+    const destroy = t.mock.method(Agent.prototype, "destroy", async () => {});
+
+    await assert.rejects(fetchReadablePage("http://public.example/", undefined, caller.signal),
+      cancel ? (error: unknown) => error === reason : /Web fetch timed out after 30 seconds/);
+    assert.equal(destroy.mock.callCount(), 1);
+  });
+}
 
 test("decodeHtml decodes supported entities", () => {
   assert.equal(decodeHtml("Tom &amp; Jerry &lt;3&nbsp;\"quoted\"&#39;"), 'Tom & Jerry <3 "quoted"\'');

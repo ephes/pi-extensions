@@ -60,11 +60,14 @@ export async function fetchReadablePage(rawUrl: string, maxChars?: number, signa
   signal?.throwIfAborted();
   const deadline = new AbortController();
   const timeoutError = new Error("Web fetch timed out after 30 seconds; retry the request.");
+  const deadlineAt = performance.now() + FETCH_DEADLINE_MS;
   const timer = setTimeout(() => deadline.abort(timeoutError), FETCH_DEADLINE_MS);
   const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
   try {
     const page = await fetchPage(rawUrl, normalizeReadableLimit(maxChars), combined);
     combined.throwIfAborted();
+    // Synchronous extraction can delay the abort timer.
+    if (performance.now() >= deadlineAt) throw timeoutError;
     return page;
   } finally {
     clearTimeout(timer);
