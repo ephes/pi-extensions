@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Return a timeout when Kagi response parsing or validation uses up the search deadline before results can be delivered.
+- Return a timeout when readable content extraction uses up the `web_content` deadline before the page can be delivered.
+
 - Recognize quoted attribute values when closing self-closing XHTML elements in `web_content`, and leave comments, CDATA sections, processing instructions, declarations and the content of text-only elements such as `<script>` and `<style>` unchanged, ending each where the HTML parser ends it.
 - Preserve words and numbers across inline formatting in `web_content` while keeping readable boundaries around blocks, breaks, table cells, form controls, embedded media and removed content.
 

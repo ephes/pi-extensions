@@ -1,5 +1,6 @@
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import type { ReadableStreamReadResult } from "node:stream/web";
 import { setImmediate } from "node:timers/promises";
 import { formatPublishedDate, normalizeKagiLimit, searchKagi, KAGI_RESPONSE_MAX_BYTES, KAGI_SEARCH_TIMEOUT_MS } from "../shared/kagi.js";
@@ -198,6 +199,37 @@ test("searchKagi total deadline covers stalled headers and body", async (t) => {
   }
   assert.equal(cancelled, true);
 });
+
+for (const cancel of [false, true]) {
+  test(`searchKagi checks elapsed time after parsing (caller cancelled=${cancel})`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let now = 100;
+    t.mock.method(performance, "now", () => now);
+    const caller = new AbortController();
+    const body = JSON.stringify(valid);
+    let fetchSignal!: AbortSignal;
+    t.mock.method(globalThis, "fetch", async (_url: unknown, options: { signal: AbortSignal }) => {
+      fetchSignal = options.signal;
+      return new Response(body);
+    });
+    const parse = JSON.parse;
+    t.mock.method(JSON, "parse", (text: string) => {
+      const result: unknown = parse(text);
+      if (text === body) {
+        now += KAGI_SEARCH_TIMEOUT_MS;
+        if (cancel) caller.abort();
+      }
+      return result;
+    });
+
+    await assert.rejects(searchKagi("query", undefined, caller.signal), cancel
+      ? { name: "AbortError", message: "Kagi search cancelled." }
+      : { name: "TimeoutError", message: "Kagi search timed out after 30 seconds. Please retry." });
+    assert.deepEqual(getEventListeners(fetchSignal, "abort"), []);
+    t.mock.timers.tick(KAGI_SEARCH_TIMEOUT_MS);
+    assert.equal(fetchSignal.aborted, cancel);
+  });
+}
 
 for (const stop of ["caller cancellation", "deadline", "reader release"] as const) {
   test(`searchKagi skips JSON validation on ${stop}`, async (t) => {
