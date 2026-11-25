@@ -100,6 +100,13 @@ test("extractReadableText removes scripts and preserves readable text blocks", (
   assert.doesNotMatch(text, /color: red/);
 });
 
+test("HTML comments preserve adjacent words, explicit spaces and structural boundaries", () => {
+  const html = "<p>co<!-- marker -->de and two <!-- marker -->words</p>"
+    + "<!-- between paragraphs --><p>Next paragraph</p>"
+    + "<table><tr><td>One</td><!-- between cells --><td>Two</td></tr></table>";
+  assert.equal(extractReadableText(html), "code and two words\n\nNext paragraph\n\nOne Two");
+});
+
 test("readable HTML preserves inline adjacency and structural boundaries", async (t) => {
   t.mock.method(dns, "lookup", async () => approved);
   const html = "<head><title>Fixture</title></head><body>Intro"

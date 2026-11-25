@@ -549,8 +549,6 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
         pending.push(separator);
       }
       for (let i = childNodes.length - 1; i >= 0; i--) pending.push(childNodes[i]);
-    } else if (defaultTreeAdapter.isCommentNode(node)) {
-      parts.push(" ");
     }
   }
 
