@@ -500,6 +500,34 @@ test("registered search bounds retained text, related terms and metadata below t
   assert.deepEqual(Object.keys(result.details.meta!).sort(), ["api_balance", "id", "ms", "node"]);
 });
 
+test("registered search budgets the heading, maximum related block and notice with result rows", async (t) => {
+  const rows = Array.from({ length: 5 }, (_, i) => ({
+    t: 0,
+    url: `https://example.test/${i}/`.padEnd(2048, "u"),
+    title: "T".repeat(512),
+    snippet: "S".repeat(2048),
+    published: "2025-01-01",
+  }));
+  const related = Array.from({ length: 10 }, (_, i) => `term-${i}`.padEnd(128, "r"));
+  const query = "Q".repeat(512);
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [...rows, { t: 1, list: related }] }));
+
+  const result = await registeredSearch().execute("test", { query, limit: 5 }, undefined, undefined);
+  const output = result.content[0].text;
+  assert.ok(output.length <= 24_000, `complete output has ${output.length} UTF-16 code units`);
+  assert.ok(output.startsWith(`# Kagi search: ${query}\n\n`));
+  assert.match(output, /\n\n\[Search output truncated\.\]$/);
+  assert.equal(result.details.truncated, true);
+  assert.equal(result.details.originalResultCount, 5);
+  assert.equal(result.details.resultCount, 4);
+  assert.equal(result.details.originalRelatedCount, 10);
+  assert.equal(result.details.relatedCount, 10);
+  const urls = rows.slice(0, 4).map((row) => row.url);
+  assert.deepEqual(result.details.urls, urls);
+  assert.deepEqual(output.match(/^ {3}URL: .+$/gm), urls.map((url) => `   URL: ${url}`));
+  assert.deepEqual(output.match(/^- .+$/gm), related.map((term) => `- ${term}`));
+});
+
 test("registered search counts all related terms without flattening the response", async (t) => {
   const rows = Array.from({ length: 200 }, (_, row) => ({
     t: 1,

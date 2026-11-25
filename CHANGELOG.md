@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Cap complete Kagi search text at 24,000 UTF-16 code units, reserving space for the query label, related searches, and truncation notice while preserving whole result rows.
+
 - Reject empty or whitespace-only Kagi queries before credential lookup or network setup in both the tool and the shared search helper.
 
 - Derive the `web_content` heading from the parsed document head so title-like markup in comments, scripts or the body cannot replace it. XHTML responses close self-closing non-void elements before parsing.

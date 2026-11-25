@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import { type KagiApiMeta, admitKagiQuery, formatPublishedDate, KAGI_LIMIT_DEFAULT, KAGI_LIMIT_MAX, KAGI_LIMIT_MIN, KAGI_QUERY_MAX_BYTES, normalizeKagiLimit, searchKagi } from "../shared/kagi.js";
 
 const RESULT_TEXT_MAX_CHARS = 24_000;
+const TRUNCATION_NOTICE = "\n\n[Search output truncated.]";
 const RELATED_MAX_COUNT = 10;
 
 /** Shorten to at most `max` UTF-16 code units with an ellipsis, never leaving a lone high surrogate. */
@@ -66,9 +67,23 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (Object.keys(response.meta).some((key) => !["id", "node", "ms", "api_balance"].includes(key))) truncated = true;
       }
 
-      const lines: string[] = [`# Kagi search: ${retainedQuery}`, ""];
+      const retainedRelated: string[] = [];
+      let originalRelatedCount = 0;
+      for (const item of response.data) {
+        if (item.t !== 1) continue;
+        originalRelatedCount += item.list.length;
+        const take = Math.min(item.list.length, RELATED_MAX_COUNT - retainedRelated.length);
+        for (let i = 0; i < take; i++) {
+          retainedRelated.push(clip(item.list[i], 128));
+        }
+      }
+      const heading = `# Kagi search: ${retainedQuery}`;
+      const relatedText = retainedRelated.length
+        ? "\n\nRelated searches:\n" + retainedRelated.map((term) => `- ${term}`).join("\n")
+        : "";
+      const rows: string[] = [];
       const urls: string[] = [];
-      let remaining = RESULT_TEXT_MAX_CHARS;
+      let remaining = RESULT_TEXT_MAX_CHARS - heading.length - relatedText.length - TRUNCATION_NOTICE.length;
       for (const result of results) {
         if (urls.length === limit) { truncated = true; break; }
         // Preserve complete usable URLs rather than returning broken prefixes.
@@ -77,39 +92,26 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (result.snippet) row.push(`   Snippet: ${clip(result.snippet, 2048)}`);
         const published = formatPublishedDate(result.published);
         if (published) row.push(`   Published: ${published}`);
-        const text = row.join("\n") + "\n\n";
+        const text = "\n\n" + row.join("\n");
         if (text.length > remaining) { truncated = true; break; }
         remaining -= text.length;
-        lines.push(...row, "");
+        rows.push(text);
         urls.push(result.url);
       }
 
-      const retainedRelated: string[] = [];
-      let originalRelatedCount = 0;
-      for (const item of response.data) {
-        if (item.t !== 1) continue;
-        originalRelatedCount += item.list.length;
-        if (!urls.length) continue;
-        const take = Math.min(item.list.length, RELATED_MAX_COUNT - retainedRelated.length);
-        for (let i = 0; i < take; i++) {
-          retainedRelated.push(clip(item.list[i], 128));
-        }
-      }
-      if (retainedRelated.length < originalRelatedCount) truncated = true;
-      if (retainedRelated.length) {
-        lines.push("Related searches:", ...retainedRelated.map((term) => `- ${term}`));
-      }
-      let text = urls.length ? lines.join("\n").trim() : results.length
+      const relatedCount = urls.length ? retainedRelated.length : 0;
+      if (relatedCount < originalRelatedCount) truncated = true;
+      let text = urls.length ? (heading + rows.join("") + relatedText).trim() : results.length
         ? `No results retained for "${retainedQuery}" within the output limits.`
         : `No results found for "${retainedQuery}".`;
-      if (truncated) text += "\n\n[Search output truncated.]";
+      if (truncated) text += TRUNCATION_NOTICE;
 
       return {
         content: [{ type: "text", text }],
         details: {
           query: retainedQuery,
           resultCount: urls.length,
-          relatedCount: retainedRelated.length,
+          relatedCount,
           originalResultCount: results.length,
           originalRelatedCount,
           truncated,
