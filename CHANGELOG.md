@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Expand self-closing XHTML tags with Unicode or punctuation in their names so `web_content` retains the following readable content.
 - Preserve literal XHTML CDATA at SVG and MathML integration points while expanding later HTML tags in `web_content`.
 - Preserve slashes at the end of unquoted attribute values when expanding self-closing XHTML tags in `web_content`.
 - Preserve native SVG and MathML self-closing tags in XHTML responses while expanding non-void self-closing tags in HTML context.

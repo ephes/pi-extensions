@@ -392,8 +392,8 @@ function xhtmlIntegrationPoint(
  * in HTML context, where the parser would otherwise leave them open.
  */
 export function expandXhtmlSelfClosingTags(xhtml: string): string {
-  // The HTML parser recognizes start tags beginning with an ASCII letter.
-  const startTag = /<(\/?)([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\f\r />])/y;
+  // The HTML tokenizer requires an initial ASCII letter. Only HTML whitespace, '/' and '>' end the name.
+  const startTag = /<(\/?)([A-Za-z][^\t\n\f\r />]*)/y;
   const parts: string[] = [];
   let copiedThrough = 0;
   let cursor = 0;
@@ -441,7 +441,8 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
     cursor = end;
     if (xhtml[cursor] !== ">") continue;
     const [, endSlash, name] = tag;
-    const lowerName = name.toLowerCase();
+    // Match the tokenizer's ASCII case folding and replacement of null characters.
+    const lowerName = name.replace(/[A-Z]/g, char => char.toLowerCase()).replaceAll("\0", "\uFFFD");
     const processForeignTags = foreignNode && !integration;
     const breakout = endSlash
       ? lowerName === "br" || lowerName === "p"
