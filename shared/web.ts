@@ -298,7 +298,7 @@ function skipXhtmlLiteral(xhtml: string, start: number, foreign: boolean): numbe
     }
     return xhtml.length;
   }
-  // Inside SVG and MathML, CDATA ends at "]]>". Elsewhere the HTML parser reads it as a
+  // In foreign content, CDATA ends at "]]>". Elsewhere the HTML parser reads it as a
   // bogus comment, like the declarations and processing instructions below.
   if (foreign && xhtml.startsWith("<![CDATA[", start)) return endAfter("]]>", start + 9);
   // Declarations, processing instructions and HTML-content CDATA end at the first '>', even inside quotes.
@@ -314,18 +314,22 @@ const rawTextEndTags = new Map(
 
 // Follows the HTML tokenizer's attribute states: a quote delimits a value only right after the
 // "=" that follows an attribute name. Elsewhere quotes and "=" are ordinary characters.
-function findXhtmlTagEnd(xhtml: string, start: number): number {
+function scanXhtmlTagEnd(xhtml: string, start: number): { end: number; selfClosing: boolean } {
   let state: "beforeName" | "name" | "afterName" | "beforeValue" | "unquotedValue" = "beforeName";
   for (let cursor = start; cursor < xhtml.length; cursor++) {
     const char = xhtml[cursor];
     // Stop at an unquoted '<' so a new tag can still be found in malformed input.
-    if (char === ">" || char === "<") return cursor;
+    if (char === ">" || char === "<") return { end: cursor, selfClosing: false };
+    // A slash in an unquoted value, including its first character, is data.
+    if (char === "/" && state !== "beforeValue" && state !== "unquotedValue" && xhtml[cursor + 1] === ">") {
+      return { end: cursor + 1, selfClosing: true };
+    }
     const space = "\t\n\f\r ".includes(char);
     if (state === "beforeValue") {
       if (space) continue;
       if (char === '"' || char === "'") {
         const close = xhtml.indexOf(char, cursor + 1);
-        if (close === -1) return xhtml.length;
+        if (close === -1) return { end: xhtml.length, selfClosing: false };
         cursor = close;
         state = "beforeName";
       } else {
@@ -345,7 +349,7 @@ function findXhtmlTagEnd(xhtml: string, start: number): number {
       state = "name";
     }
   }
-  return xhtml.length;
+  return { end: xhtml.length, selfClosing: false };
 }
 
 // Start tags that the HTML parser reprocesses in HTML context after leaving foreign content.
@@ -423,11 +427,11 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
     if (!tag) continue;
 
     const nameEnd = startTag.lastIndex;
-    cursor = findXhtmlTagEnd(xhtml, nameEnd);
+    const { end, selfClosing } = scanXhtmlTagEnd(xhtml, nameEnd);
+    cursor = end;
     if (xhtml[cursor] !== ">") continue;
     const [, endSlash, name] = tag;
     const lowerName = name.toLowerCase();
-    const selfClosing = xhtml[cursor - 1] === "/";
     const breakout = endSlash
       ? lowerName === "br" || lowerName === "p"
       : foreignBreakoutTags.has(lowerName) || (lowerName === "font" && inForeign

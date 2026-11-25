@@ -689,6 +689,18 @@ test("XHTML expansion follows HTML breakout from foreign content", () => {
   assert.equal(expandXhtmlSelfClosingTags(input), expected);
 });
 
+test("XHTML expansion preserves a slash at the end of an unquoted value", () => {
+  const input = '<section data-path=/docs/><span data-kind=note />text</section>'
+    + '<script src=/assets/>const tag = "<nav/>";</script>'
+    + '<svg data-path=/icons/><path/></svg><nav data-path="/menu/"/>';
+  const expected = '<section data-path=/docs/><span data-kind=note ></span>text</section>'
+    + '<script src=/assets/>const tag = "<nav/>";</script>'
+    + '<svg data-path=/icons/><path/></svg><nav data-path="/menu/"></nav>';
+  const expanded = expandXhtmlSelfClosingTags(input);
+  assert.match(serialize(parseFragment(expanded)), /<section data-path="\/docs\/"><span data-kind="note"><\/span>text<\/section>/);
+  assert.equal(expanded, expected);
+});
+
 test("XHTML self-closing expansion keeps void elements and stays linear", () => {
   assert.equal(expandXhtmlSelfClosingTags('<br/><IMG src="a"/><div class="x"/>'), '<br/><IMG src="a"/><div class="x"></div>');
   const started = performance.now();
