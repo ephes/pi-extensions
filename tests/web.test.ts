@@ -632,6 +632,10 @@ test("XHTML self-closing expansion ends regions where the HTML parser does", () 
     ['<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav/>', '<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav></nav>'],
     ['<svg><style><x/></style></svg><script/><title>a<b/>', '<svg><style><x></x></style></svg><script></script><title>a<b/>'],
     ['<plaintext><nav/>', '<plaintext><nav/>'],
+    // Quotes outside a value position do not start a quoted value.
+    ['<img alt=a=\'b><script src="s"/>', '<img alt=a=\'b><script src="s"></script>'],
+    ['<p a=="x>"<nav/><p ="y>"<nav/>', '<p a=="x>"<nav></nav><p ="y>"<nav></nav>'],
+    ['<p a b = "c > /"/>', '<p a b = "c > /"></p>'],
   ];
   for (const [input, expected] of cases) assert.equal(expandXhtmlSelfClosingTags(input), expected, input);
 });

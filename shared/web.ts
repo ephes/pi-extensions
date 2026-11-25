@@ -309,23 +309,40 @@ const rawTextEndTags = new Map(
     .map(name => [name, new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi")]),
 );
 
-// Quotes delimit only attribute values, so a stray quote elsewhere is an ordinary character.
+// Follows the HTML tokenizer's attribute states: a quote delimits a value only right after the
+// "=" that follows an attribute name. Elsewhere quotes and "=" are ordinary characters.
 function findXhtmlTagEnd(xhtml: string, start: number): number {
-  let cursor = start;
-  while (cursor < xhtml.length) {
+  let state: "beforeName" | "name" | "afterName" | "beforeValue" | "unquotedValue" = "beforeName";
+  for (let cursor = start; cursor < xhtml.length; cursor++) {
     const char = xhtml[cursor];
     // Stop at an unquoted '<' so a new tag can still be found in malformed input.
     if (char === ">" || char === "<") return cursor;
-    cursor++;
-    if (char !== "=") continue;
-    while (cursor < xhtml.length && "\t\n\f\r ".includes(xhtml[cursor])) cursor++;
-    const quote = xhtml[cursor];
-    if (quote !== '"' && quote !== "'") continue;
-    const close = xhtml.indexOf(quote, cursor + 1);
-    if (close === -1) return xhtml.length;
-    cursor = close + 1;
+    const space = "\t\n\f\r ".includes(char);
+    if (state === "beforeValue") {
+      if (space) continue;
+      if (char === '"' || char === "'") {
+        const close = xhtml.indexOf(char, cursor + 1);
+        if (close === -1) return xhtml.length;
+        cursor = close;
+        state = "beforeName";
+      } else {
+        state = "unquotedValue";
+      }
+    } else if (state === "unquotedValue") {
+      if (space) state = "beforeName";
+    } else if (state === "beforeName") {
+      if (!space && char !== "/") state = "name";
+    } else if (char === "=") {
+      state = "beforeValue";
+    } else if (space) {
+      state = "afterName";
+    } else if (char === "/") {
+      state = "beforeName";
+    } else {
+      state = "name";
+    }
   }
-  return cursor;
+  return xhtml.length;
 }
 
 /**
