@@ -173,6 +173,12 @@ function kagiCancelledError(): Error {
   return error;
 }
 
+function kagiTimeoutError(): Error {
+  const error = new Error("Kagi search timed out after 30 seconds. Please retry.");
+  error.name = "TimeoutError";
+  return error;
+}
+
 export async function searchKagi(query: string, limit?: number, signal?: AbortSignal): Promise<KagiSearchResponse> {
   if (signal?.aborted) throw kagiCancelledError();
   const admittedQuery = admitKagiQuery(query);
@@ -184,18 +190,13 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
 
   const controller = new AbortController();
   const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  const deadline = performance.now() + KAGI_SEARCH_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), KAGI_SEARCH_TIMEOUT_MS);
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
     onAbort = () => {
       const timedOut = controller.signal.aborted && !signal?.aborted;
-      if (!timedOut) {
-        reject(kagiCancelledError());
-        return;
-      }
-      const error = new Error("Kagi search timed out after 30 seconds. Please retry.");
-      error.name = "TimeoutError";
-      reject(error);
+      reject(timedOut ? kagiTimeoutError() : kagiCancelledError());
     };
     if (combined.aborted) onAbort();
     else combined.addEventListener("abort", onAbort, { once: true });
@@ -235,7 +236,11 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
     return validateResponse(payload);
   };
   try {
-    return await Promise.race([aborted, request()]);
+    const result = await Promise.race([aborted, request()]);
+    if (signal?.aborted) throw kagiCancelledError();
+    // Synchronous parsing and validation can delay the abort timer.
+    if (performance.now() >= deadline) throw kagiTimeoutError();
+    return result;
   } finally {
     clearTimeout(timer);
     if (onAbort) combined.removeEventListener("abort", onAbort);
