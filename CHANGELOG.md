@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Recognize quoted attribute values when closing self-closing XHTML elements in `web_content`, and leave comments, CDATA sections, processing instructions, declarations and the content of text-only elements such as `<script>` and `<style>` unchanged, ending each where the HTML parser ends it.
+- Preserve words and numbers across inline formatting in `web_content` while keeping readable boundaries around blocks, breaks, table cells, form controls, embedded media and removed content.
+
 - Cap complete Kagi search text at 24,000 UTF-16 code units, reserving space for the query label, related searches, and truncation notice while preserving whole result rows.
 - Keep the first occurrence of each exact Kagi related term before applying the retained count, with duplicates still included in the original count.
 

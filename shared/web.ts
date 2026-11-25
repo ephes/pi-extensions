@@ -26,6 +26,13 @@ const noiseTags = new Set(["script", "style", "noscript", "svg", "iframe", "nav"
 const blockTags = new Set([
   "p", "div", "section", "article", "main", "h1", "h2", "h3", "h4", "h5", "h6",
   "li", "ul", "ol", "blockquote", "pre", "tr", "table", "hr", "br",
+  "address", "caption", "dd", "details", "dialog", "dl", "dt", "fieldset",
+  "figcaption", "figure", "form", "legend", "menu", "search", "summary",
+  "center", "dir", "hgroup", "listing", "optgroup", "option", "plaintext", "xmp",
+]);
+// Inline boxes whose content is not part of the surrounding words.
+const spaceSeparatedTags = new Set([
+  "title", "td", "th", "button", "input", "select", "textarea", "img", "audio", "video", "canvas", "embed", "object",
 ]);
 
 // Human-visible URLs never include access credentials or signed parameters.
@@ -274,16 +281,122 @@ type HtmlParent = DefaultTreeAdapterTypes.ParentNode;
 const voidTags = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 ]);
-// The attribute scan stops at the next "<" or ">", so matching stays linear on hostile input.
-const reSelfClosingTag = /<([A-Za-z][A-Za-z0-9:_.-]*)([^<>]*?)\/>/g;
+// Ends of the regions the HTML parser reads as one comment or declaration token.
+function skipXhtmlLiteral(xhtml: string, start: number, foreign: boolean): number | undefined {
+  const endAfter = (close: string, from: number) => {
+    const index = xhtml.indexOf(close, from);
+    return index === -1 ? xhtml.length : index + close.length;
+  };
+  if (xhtml.startsWith("<!--", start)) {
+    // One forward scan for "-->" or "--!>". Starting at "<!" also ends "<!-->" and "<!--->".
+    for (let dash = xhtml.indexOf("--", start + 2); dash !== -1; dash = xhtml.indexOf("--", dash + 1)) {
+      if (xhtml[dash + 2] === ">") return dash + 3;
+      if (dash >= start + 4 && xhtml.startsWith("!>", dash + 2)) return dash + 4;
+    }
+    return xhtml.length;
+  }
+  // Inside SVG and MathML, CDATA ends at "]]>". Elsewhere the HTML parser reads it as a
+  // bogus comment, like the declarations and processing instructions below.
+  if (foreign && xhtml.startsWith("<![CDATA[", start)) return endAfter("]]>", start + 9);
+  // Declarations, processing instructions and HTML-content CDATA end at the first '>', even inside quotes.
+  if (xhtml.startsWith("<!", start) || xhtml.startsWith("<?", start)) return endAfter(">", start + 2);
+  return undefined;
+}
+
+// The HTML tokenizer reads these elements' content as text up to the matching end tag.
+const rawTextEndTags = new Map(
+  ["iframe", "noembed", "noframes", "noscript", "script", "style", "textarea", "title", "xmp"]
+    .map(name => [name, new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi")]),
+);
+
+// Follows the HTML tokenizer's attribute states: a quote delimits a value only right after the
+// "=" that follows an attribute name. Elsewhere quotes and "=" are ordinary characters.
+function findXhtmlTagEnd(xhtml: string, start: number): number {
+  let state: "beforeName" | "name" | "afterName" | "beforeValue" | "unquotedValue" = "beforeName";
+  for (let cursor = start; cursor < xhtml.length; cursor++) {
+    const char = xhtml[cursor];
+    // Stop at an unquoted '<' so a new tag can still be found in malformed input.
+    if (char === ">" || char === "<") return cursor;
+    const space = "\t\n\f\r ".includes(char);
+    if (state === "beforeValue") {
+      if (space) continue;
+      if (char === '"' || char === "'") {
+        const close = xhtml.indexOf(char, cursor + 1);
+        if (close === -1) return xhtml.length;
+        cursor = close;
+        state = "beforeName";
+      } else {
+        state = "unquotedValue";
+      }
+    } else if (state === "unquotedValue") {
+      if (space) state = "beforeName";
+    } else if (state === "beforeName") {
+      if (!space && char !== "/") state = "name";
+    } else if (char === "=") {
+      state = "beforeValue";
+    } else if (space) {
+      state = "afterName";
+    } else if (char === "/") {
+      state = "beforeName";
+    } else {
+      state = "name";
+    }
+  }
+  return xhtml.length;
+}
 
 /**
  * XHTML closes `<script/>`, `<nav/>` and similar elements in place, but the HTML parser would
  * open them and let them swallow the rest of the document. Write explicit end tags first.
  */
 export function expandXhtmlSelfClosingTags(xhtml: string): string {
-  return xhtml.replace(reSelfClosingTag, (tag, name: string, attributes: string) =>
-    voidTags.has(name.toLowerCase()) ? tag : `<${name}${attributes}></${name}>`);
+  // The HTML parser recognizes start tags beginning with an ASCII letter.
+  const startTag = /<(\/?)([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\f\r />])/y;
+  const parts: string[] = [];
+  let copiedThrough = 0;
+  let cursor = 0;
+  // Open svg/math elements. This approximates the parser's foreign content, where CDATA is literal.
+  let foreignDepth = 0;
+  while ((cursor = xhtml.indexOf("<", cursor)) !== -1) {
+    const literalEnd = skipXhtmlLiteral(xhtml, cursor, foreignDepth > 0);
+    if (literalEnd !== undefined) {
+      cursor = literalEnd;
+      continue;
+    }
+    const start = cursor++;
+    startTag.lastIndex = start;
+    const tag = startTag.exec(xhtml);
+    if (!tag) continue;
+
+    cursor = findXhtmlTagEnd(xhtml, startTag.lastIndex);
+    if (xhtml[cursor] !== ">") continue;
+    const [, endSlash, name] = tag;
+    const lowerName = name.toLowerCase();
+    const foreignRoot = lowerName === "svg" || lowerName === "math";
+    const selfClosing = xhtml[cursor - 1] === "/";
+    if (endSlash) {
+      if (foreignRoot && foreignDepth > 0) foreignDepth--;
+    } else if (selfClosing && !voidTags.has(lowerName)) {
+      parts.push(xhtml.slice(copiedThrough, cursor - 1), `></${name}>`);
+      copiedThrough = cursor + 1;
+    } else if (!selfClosing && foreignRoot) {
+      foreignDepth++;
+    } else if (!selfClosing && foreignDepth === 0) {
+      if (lowerName === "plaintext") break;
+      const rawTextEnd = rawTextEndTags.get(lowerName);
+      if (rawTextEnd) {
+        // Without an end tag, the rest of the document is text.
+        rawTextEnd.lastIndex = cursor + 1;
+        const endTag = rawTextEnd.exec(xhtml);
+        if (!endTag) break;
+        cursor = endTag.index;
+        continue;
+      }
+    }
+    cursor++;
+  }
+  parts.push(xhtml.slice(copiedThrough));
+  return parts.join("");
 }
 
 function findHtmlChild(parent: HtmlParent | undefined, tagName: string) {
@@ -329,9 +442,13 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
         parts.push("\n");
         continue;
       }
-      const separator = blockTags.has(tagName) ? "\n" : " ";
-      parts.push(separator);
-      pending.push(separator);
+      let separator = "";
+      if (blockTags.has(tagName)) separator = "\n";
+      else if (spaceSeparatedTags.has(tagName)) separator = " ";
+      if (separator) {
+        parts.push(separator);
+        pending.push(separator);
+      }
       for (let i = childNodes.length - 1; i >= 0; i--) pending.push(childNodes[i]);
     } else if (defaultTreeAdapter.isCommentNode(node)) {
       parts.push(" ");

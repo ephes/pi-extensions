@@ -99,6 +99,41 @@ test("extractReadableText removes scripts and preserves readable text blocks", (
   assert.doesNotMatch(text, /color: red/);
 });
 
+test("readable HTML preserves inline adjacency and structural boundaries", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const html = "<head><title>Fixture</title></head><body>Intro"
+    + "<p>un<strong>broken</strong> code AB<em><span>12</span></em>, 12.<b>50</b> and <i>two</i> words"
+    + "<br>Next line\nAnother line</p><p>Second paragraph</p>"
+    + "<div>Before<script>noise</script>After</div>"
+    + "<dl><dt>Label</dt><dd>Value</dd></dl>"
+    + "<table><tr><th>One</th><td>Two</td></tr></table>"
+    + "<center>Centered</center><label>Name</label><input><label>Age</label>"
+    + "<button>Save</button><button>Cancel</button>"
+    + "<select><option>Red</option><option>Blue</option></select></body>";
+  t.mock.method(undici, "fetch", async () => new undici.Response(html, {
+    headers: { "content-type": "text/html" },
+  }));
+
+  const page = await fetchReadablePage("http://public.example/");
+  assert.equal(page.title, "Fixture");
+  assert.equal(page.content, [
+    "Fixture Intro",
+    "unbroken code AB12, 12.50 and two words",
+    "Next line",
+    "Another line",
+    "Second paragraph",
+    "Before",
+    "After",
+    "Label",
+    "Value",
+    "One Two",
+    "Centered",
+    "Name Age Save Cancel",
+    "Red",
+    "Blue",
+  ].join("\n\n"));
+});
+
 test("decodeHtml decodes supported entities", () => {
   assert.equal(decodeHtml("Tom &amp; Jerry &lt;3&nbsp;\"quoted\"&#39;"), 'Tom & Jerry <3 "quoted"\'');
 });
@@ -548,11 +583,71 @@ test("fetch closes self-closing XHTML elements before HTML parsing", async (t) =
   assert.equal(page.content, "X\n\nBody\n\ntext\n\nMore");
 });
 
+test("fetch normalizes quoted XHTML tags and preserves literal CDATA", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const xhtml = '<head><title>Example</title><script data-test="a > b"/></head>'
+    + '<body><p>After script</p><math xmlns="http://www.w3.org/1998/Math/MathML">'
+    + '<mrow><![CDATA[literal <sample/> text]]></mrow></math></body>';
+  const mediaTypes = ["application/xhtml+xml", "text/html"];
+  t.mock.method(undici, "fetch", async () => new undici.Response(xhtml, {
+    headers: { "content-type": mediaTypes.shift()! },
+  }));
+
+  const page = await fetchReadablePage("http://public.example/");
+  assert.equal(page.title, "Example");
+  assert.match(page.content, /After script/);
+  assert.match(page.content, /literal <sample\/> text/);
+
+  assert.equal((await fetchReadablePage("http://public.example/")).content, "Example");
+});
+
+test("XHTML self-closing expansion skips non-tag regions and quoted delimiters", () => {
+  const unchanged = '<?example "<fake/>"?><!DOCTYPE html>'
+    + '<!-- a > b <fake/> --><!-- c --!><![CDATA[<fake/>]]>'
+    + '<p data-test="a > b /">Text</p>';
+  assert.equal(
+    expandXhtmlSelfClosingTags(unchanged + `<script data-test='a > b' src="x/"/>`),
+    unchanged + `<script data-test='a > b' src="x/"></script>`,
+  );
+  const unfinished = '<!-- <fake/>';
+  assert.equal(expandXhtmlSelfClosingTags(unfinished), unfinished);
+});
+
+test("XHTML self-closing expansion ends regions where the HTML parser does", () => {
+  const cases: Array<[string, string]> = [
+    ['<?pi a > <script/> ?>', '<?pi a > <script></script> ?>'],
+    ['<!x [ "a > <nav/>', '<!x [ "a > <nav></nav>'],
+    ['<!DOCTYPE html [<!ENTITY e "x">]><nav/>', '<!DOCTYPE html [<!ENTITY e "x">]><nav></nav>'],
+    ['<!--><nav/><!---><nav/><!--!><nav/>-->', '<!--><nav></nav><!---><nav></nav><!--!><nav/>-->'],
+    ['<p a"b/><nav\f/>', '<p a"b></p><nav\f></nav>'],
+    ['<p a = \'x > /\'/>', '<p a = \'x > /\'></p>'],
+    ['<pre><![CDATA[<p>Use <br/> or <script/></p>]]></pre>', '<pre><![CDATA[<p>Use <br/> or <script></script></p>]]></pre>'],
+    ['<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav/>]]>', '<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav></nav>]]>'],
+    ['<MATH><math/><![CDATA[a > <nav/>]]></MATH >', '<MATH><math></math><![CDATA[a > <nav/>]]></MATH >'],
+    // Raw-text content is opaque up to its end tag, as in the HTML tokenizer.
+    [
+      '<script>//<![CDATA[\nif (a > b) x = "<!--" + \'<a b="\' + "<x/>";\n//]]></SCRIPT\n><nav/>',
+      '<script>//<![CDATA[\nif (a > b) x = "<!--" + \'<a b="\' + "<x/>";\n//]]></SCRIPT\n><nav></nav>',
+    ],
+    ['<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav/>', '<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav></nav>'],
+    ['<svg><style><x/></style></svg><script/><title>a<b/>', '<svg><style><x></x></style></svg><script></script><title>a<b/>'],
+    ['<plaintext><nav/>', '<plaintext><nav/>'],
+    // Quotes outside a value position do not start a quoted value.
+    ['<img alt=a=\'b><script src="s"/>', '<img alt=a=\'b><script src="s"></script>'],
+    ['<p a=="x>"<nav/><p ="y>"<nav/>', '<p a=="x>"<nav></nav><p ="y>"<nav></nav>'],
+    ['<p a b = "c > /"/>', '<p a b = "c > /"></p>'],
+  ];
+  for (const [input, expected] of cases) assert.equal(expandXhtmlSelfClosingTags(input), expected, input);
+});
+
 test("XHTML self-closing expansion keeps void elements and stays linear", () => {
   assert.equal(expandXhtmlSelfClosingTags('<br/><IMG src="a"/><div class="x"/>'), '<br/><IMG src="a"/><div class="x"></div>');
   const started = performance.now();
   expandXhtmlSelfClosingTags("<a ".repeat(500_000));
   expandXhtmlSelfClosingTags("<a".repeat(500_000));
+  expandXhtmlSelfClosingTags("<!---->".repeat(200_000));
+  expandXhtmlSelfClosingTags('<a b="x" '.repeat(200_000));
+  expandXhtmlSelfClosingTags("<script>".repeat(200_000));
   assert.ok(performance.now() - started < 2_000);
 });
 
