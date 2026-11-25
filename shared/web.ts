@@ -1,5 +1,5 @@
 import dns from "node:dns/promises";
-import { decodeHTML } from "entities";
+import { decodeHTML, escapeText } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
 import { MIMEType } from "node:util";
@@ -285,11 +285,7 @@ const voidTags = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 ]);
 // Ends of the regions the HTML parser reads as one comment or declaration token.
-function skipXhtmlLiteral(xhtml: string, start: number, foreign: boolean): number | undefined {
-  const endAfter = (close: string, from: number) => {
-    const index = xhtml.indexOf(close, from);
-    return index === -1 ? xhtml.length : index + close.length;
-  };
+function skipXhtmlLiteral(xhtml: string, start: number): number | undefined {
   if (xhtml.startsWith("<!--", start)) {
     // One forward scan for "-->" or "--!>". Starting at "<!" also ends "<!-->" and "<!--->".
     for (let dash = xhtml.indexOf("--", start + 2); dash !== -1; dash = xhtml.indexOf("--", dash + 1)) {
@@ -298,11 +294,11 @@ function skipXhtmlLiteral(xhtml: string, start: number, foreign: boolean): numbe
     }
     return xhtml.length;
   }
-  // In foreign content, CDATA ends at "]]>". Elsewhere the HTML parser reads it as a
-  // bogus comment, like the declarations and processing instructions below.
-  if (foreign && xhtml.startsWith("<![CDATA[", start)) return endAfter("]]>", start + 9);
   // Declarations, processing instructions and HTML-content CDATA end at the first '>', even inside quotes.
-  if (xhtml.startsWith("<!", start) || xhtml.startsWith("<?", start)) return endAfter(">", start + 2);
+  if (xhtml.startsWith("<!", start) || xhtml.startsWith("<?", start)) {
+    const end = xhtml.indexOf(">", start + 2);
+    return end === -1 ? xhtml.length : end + 1;
+  }
   return undefined;
 }
 
@@ -396,8 +392,8 @@ function xhtmlIntegrationPoint(
  * in HTML context, where the parser would otherwise leave them open.
  */
 export function expandXhtmlSelfClosingTags(xhtml: string): string {
-  // The HTML parser recognizes start tags beginning with an ASCII letter.
-  const startTag = /<(\/?)([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\f\r />])/y;
+  // The HTML tokenizer requires an initial ASCII letter. Only HTML whitespace, '/' and '>' end the name.
+  const startTag = /<(\/?)([A-Za-z][^\t\n\f\r />]*)/y;
   const parts: string[] = [];
   let copiedThrough = 0;
   let cursor = 0;
@@ -415,8 +411,22 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
 
   while ((cursor = xhtml.indexOf("<", cursor)) !== -1) {
     let parent = openElements.at(-1);
-    const inForeign = parent !== undefined && parent.namespace !== "html" && !parent.integration;
-    const literalEnd = skipXhtmlLiteral(xhtml, cursor, inForeign);
+    const foreignNode = parent !== undefined && parent.namespace !== "html";
+    const integration = parent?.integration;
+    if (foreignNode && xhtml.startsWith("<![CDATA[", cursor)) {
+      const contentStart = cursor + 9;
+      const close = xhtml.indexOf("]]>", contentStart);
+      const end = close === -1 ? xhtml.length : close + 3;
+      if (integration) {
+        // parse5 reads CDATA at integration points as a bogus comment. Pass its payload as text.
+        const content = xhtml.slice(contentStart, close === -1 ? xhtml.length : close);
+        parts.push(xhtml.slice(copiedThrough, cursor), escapeText(content));
+        copiedThrough = end;
+      }
+      cursor = end;
+      continue;
+    }
+    const literalEnd = skipXhtmlLiteral(xhtml, cursor);
     if (literalEnd !== undefined) {
       cursor = literalEnd;
       continue;
@@ -431,12 +441,14 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
     cursor = end;
     if (xhtml[cursor] !== ">") continue;
     const [, endSlash, name] = tag;
-    const lowerName = name.toLowerCase();
+    // Match the tokenizer's ASCII case folding and replacement of null characters.
+    const lowerName = name.replace(/[A-Z]/g, char => char.toLowerCase()).replaceAll("\0", "\uFFFD");
+    const processForeignTags = foreignNode && !integration;
     const breakout = endSlash
       ? lowerName === "br" || lowerName === "p"
-      : foreignBreakoutTags.has(lowerName) || (lowerName === "font" && inForeign
+      : foreignBreakoutTags.has(lowerName) || (lowerName === "font" && processForeignTags
         && readXhtmlTagAttributes(xhtml, nameEnd, cursor).some(attr => ["color", "face", "size"].includes(attr.name)));
-    if (inForeign && breakout) {
+    if (processForeignTags && breakout) {
       while (parent && parent.namespace !== "html" && !parent.integration) {
         popTo(openElements.length - 1);
         parent = openElements.at(-1);
