@@ -630,6 +630,33 @@ test("fetch normalizes quoted XHTML tags and preserves literal CDATA", async (t)
   assert.equal((await fetchReadablePage("http://public.example/")).content, "Example");
 });
 
+for (const [point, attrs] of [
+  ["mtext", ""],
+  ["annotation-xml", ' encoding="text/html"'],
+]) {
+  test(`fetch preserves XHTML CDATA inside ${point}`, async (t) => {
+    t.mock.method(dns, "lookup", async () => approved);
+    const xhtml = `<math><${point}${attrs}>`
+      + '<![CDATA[literal <sample/> and <nav/> &amp;]]><script/><p>After script</p>'
+      + `</${point}></math>`;
+    t.mock.method(undici, "fetch", async () => new undici.Response(xhtml, {
+      headers: { "content-type": "application/xhtml+xml" },
+    }));
+    const page = await fetchReadablePage("http://public.example/");
+    assert.equal(page.content, "literal <sample/> and <nav/> &amp;\n\nAfter script");
+  });
+}
+
+test("XHTML expansion preserves CDATA inside SVG foreignObject", () => {
+  const prefix = '<svg><foreignObject>';
+  const htmlChild = '<div><![CDATA[<sample> and <nav/>]]></div>';
+  const suffix = '</foreignObject></svg>';
+  assert.equal(
+    expandXhtmlSelfClosingTags(prefix + '<![CDATA[literal <sample/> and <nav/>]]>' + htmlChild + suffix),
+    prefix + 'literal &lt;sample/&gt; and &lt;nav/&gt;<div><![CDATA[<sample> and <nav></nav>]]></div>' + suffix,
+  );
+});
+
 test("XHTML self-closing expansion skips non-tag regions and quoted delimiters", () => {
   const unchanged = '<?example "<fake/>"?><!DOCTYPE html>'
     + '<!-- a > b <fake/> --><!-- c --!><![CDATA[<fake/>]]>'
