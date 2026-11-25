@@ -817,6 +817,15 @@ test("malformed UTF-8 HTTP error bodies retain status without body evidence", as
   });
 });
 
+test("Kagi refuses a published value that overflows to infinity on the wire", async (t) => {
+  // Response.json would serialize Infinity as null, so keep the raw overflow literal.
+  const body = '{"data":[{"t":0,"url":"https://example.com/","title":"t","published":-1e309}]}';
+  t.mock.method(globalThis, "fetch", async () => new Response(body));
+  for (const run of [() => searchKagi("synthetic"), () => registeredSearch().execute("test", { query: "synthetic" }, undefined, undefined)]) {
+    await assert.rejects(run(), { message: "Kagi API response has invalid search data." });
+  }
+});
+
 for (const url of [
   "javascript:alert('private-url')", "data:text/plain,private-url", "file:///private-url", "ftp://example.com/private-url",
   "/private-url", "//example.com/private-url", "https:example.com/private-url", "not a private-url", "https://", "https://[invalid/private-url",
