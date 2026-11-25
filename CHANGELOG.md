@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve slashes at the end of unquoted attribute values when expanding self-closing XHTML tags in `web_content`.
+- Preserve native SVG and MathML self-closing tags in XHTML responses while expanding non-void self-closing tags in HTML context.
+
 - Return a timeout when Kagi response parsing or validation uses up the search deadline before results can be delivered.
 - Return a timeout when readable content extraction uses up the `web_content` deadline before the page can be delivered.
 

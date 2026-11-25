@@ -3,7 +3,7 @@ import { decodeHTML } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
 import { MIMEType } from "node:util";
-import { defaultTreeAdapter, parse, type DefaultTreeAdapterTypes } from "parse5";
+import { defaultTreeAdapter, parse, parseFragment, type DefaultTreeAdapterTypes } from "parse5";
 import undici, { Agent, type Response } from "undici";
 import { EmptyResponseReadLimitError, MAX_CONSECUTIVE_EMPTY_READS, USER_AGENT } from "./http.js";
 import { clipText } from "./text.js";
@@ -298,7 +298,7 @@ function skipXhtmlLiteral(xhtml: string, start: number, foreign: boolean): numbe
     }
     return xhtml.length;
   }
-  // Inside SVG and MathML, CDATA ends at "]]>". Elsewhere the HTML parser reads it as a
+  // In foreign content, CDATA ends at "]]>". Elsewhere the HTML parser reads it as a
   // bogus comment, like the declarations and processing instructions below.
   if (foreign && xhtml.startsWith("<![CDATA[", start)) return endAfter("]]>", start + 9);
   // Declarations, processing instructions and HTML-content CDATA end at the first '>', even inside quotes.
@@ -314,18 +314,22 @@ const rawTextEndTags = new Map(
 
 // Follows the HTML tokenizer's attribute states: a quote delimits a value only right after the
 // "=" that follows an attribute name. Elsewhere quotes and "=" are ordinary characters.
-function findXhtmlTagEnd(xhtml: string, start: number): number {
+function scanXhtmlTagEnd(xhtml: string, start: number): { end: number; selfClosing: boolean } {
   let state: "beforeName" | "name" | "afterName" | "beforeValue" | "unquotedValue" = "beforeName";
   for (let cursor = start; cursor < xhtml.length; cursor++) {
     const char = xhtml[cursor];
     // Stop at an unquoted '<' so a new tag can still be found in malformed input.
-    if (char === ">" || char === "<") return cursor;
+    if (char === ">" || char === "<") return { end: cursor, selfClosing: false };
+    // A slash in an unquoted value, including its first character, is data.
+    if (char === "/" && state !== "beforeValue" && state !== "unquotedValue" && xhtml[cursor + 1] === ">") {
+      return { end: cursor + 1, selfClosing: true };
+    }
     const space = "\t\n\f\r ".includes(char);
     if (state === "beforeValue") {
       if (space) continue;
       if (char === '"' || char === "'") {
         const close = xhtml.indexOf(char, cursor + 1);
-        if (close === -1) return xhtml.length;
+        if (close === -1) return { end: xhtml.length, selfClosing: false };
         cursor = close;
         state = "beforeName";
       } else {
@@ -345,12 +349,51 @@ function findXhtmlTagEnd(xhtml: string, start: number): number {
       state = "name";
     }
   }
-  return xhtml.length;
+  return { end: xhtml.length, selfClosing: false };
+}
+
+// Start tags that the HTML parser reprocesses in HTML context after leaving foreign content.
+const foreignBreakoutTags = new Set([
+  "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt", "em",
+  "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img", "li", "listing",
+  "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span", "strong", "strike",
+  "sub", "sup", "table", "tt", "u", "ul", "var",
+]);
+const svgHtmlIntegrationPoints = new Set(["desc", "foreignobject", "title"]);
+const mathTextIntegrationPoints = new Set(["mi", "mn", "mo", "ms", "mtext"]);
+
+type XhtmlNamespace = "html" | "svg" | "math";
+type XhtmlOpenElement = {
+  name: string;
+  namespace: XhtmlNamespace;
+  integration: "html" | "mathText" | undefined;
+  previousSameName: number | undefined;
+};
+
+function readXhtmlTagAttributes(xhtml: string, nameEnd: number, tagEnd: number) {
+  // Use a neutral element so parse5 applies its attribute and character-reference rules.
+  const element = parseFragment(`<x${xhtml.slice(nameEnd, tagEnd + 1)}`).childNodes[0];
+  return element && defaultTreeAdapter.isElementNode(element) ? element.attrs : [];
+}
+
+function xhtmlIntegrationPoint(
+  namespace: XhtmlNamespace, name: string, xhtml: string, nameEnd: number, tagEnd: number,
+): XhtmlOpenElement["integration"] {
+  if (namespace === "svg" && svgHtmlIntegrationPoints.has(name)) return "html";
+  if (namespace === "math") {
+    if (mathTextIntegrationPoints.has(name)) return "mathText";
+    if (name === "annotation-xml") {
+      const encoding = readXhtmlTagAttributes(xhtml, nameEnd, tagEnd).find(attr => attr.name === "encoding");
+      const value = encoding?.value.toLowerCase();
+      if (value === "text/html" || value === "application/xhtml+xml") return "html";
+    }
+  }
+  return undefined;
 }
 
 /**
- * XHTML closes `<script/>`, `<nav/>` and similar elements in place, but the HTML parser would
- * open them and let them swallow the rest of the document. Write explicit end tags first.
+ * XHTML closes `<script/>`, `<nav/>` and similar elements in place. Write explicit end tags
+ * in HTML context, where the parser would otherwise leave them open.
  */
 export function expandXhtmlSelfClosingTags(xhtml: string): string {
   // The HTML parser recognizes start tags beginning with an ASCII letter.
@@ -358,10 +401,22 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
   const parts: string[] = [];
   let copiedThrough = 0;
   let cursor = 0;
-  // Open svg/math elements. This approximates the parser's foreign content, where CDATA is literal.
-  let foreignDepth = 0;
+  // Track explicit nesting from the first foreign root, including any HTML inside it.
+  const openElements: XhtmlOpenElement[] = [];
+  const topByName = new Map<string, number>();
+  const popTo = (length: number) => {
+    // Index by tag name so unmatched end tags don't rescan the stack.
+    while (openElements.length > length) {
+      const { name, previousSameName } = openElements.pop()!;
+      if (previousSameName === undefined) topByName.delete(name);
+      else topByName.set(name, previousSameName);
+    }
+  };
+
   while ((cursor = xhtml.indexOf("<", cursor)) !== -1) {
-    const literalEnd = skipXhtmlLiteral(xhtml, cursor, foreignDepth > 0);
+    let parent = openElements.at(-1);
+    const inForeign = parent !== undefined && parent.namespace !== "html" && !parent.integration;
+    const literalEnd = skipXhtmlLiteral(xhtml, cursor, inForeign);
     if (literalEnd !== undefined) {
       cursor = literalEnd;
       continue;
@@ -371,29 +426,58 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
     const tag = startTag.exec(xhtml);
     if (!tag) continue;
 
-    cursor = findXhtmlTagEnd(xhtml, startTag.lastIndex);
+    const nameEnd = startTag.lastIndex;
+    const { end, selfClosing } = scanXhtmlTagEnd(xhtml, nameEnd);
+    cursor = end;
     if (xhtml[cursor] !== ">") continue;
     const [, endSlash, name] = tag;
     const lowerName = name.toLowerCase();
-    const foreignRoot = lowerName === "svg" || lowerName === "math";
-    const selfClosing = xhtml[cursor - 1] === "/";
+    const breakout = endSlash
+      ? lowerName === "br" || lowerName === "p"
+      : foreignBreakoutTags.has(lowerName) || (lowerName === "font" && inForeign
+        && readXhtmlTagAttributes(xhtml, nameEnd, cursor).some(attr => ["color", "face", "size"].includes(attr.name)));
+    if (inForeign && breakout) {
+      while (parent && parent.namespace !== "html" && !parent.integration) {
+        popTo(openElements.length - 1);
+        parent = openElements.at(-1);
+      }
+    }
     if (endSlash) {
-      if (foreignRoot && foreignDepth > 0) foreignDepth--;
-    } else if (selfClosing && !voidTags.has(lowerName)) {
-      parts.push(xhtml.slice(copiedThrough, cursor - 1), `></${name}>`);
-      copiedThrough = cursor + 1;
-    } else if (!selfClosing && foreignRoot) {
-      foreignDepth++;
-    } else if (!selfClosing && foreignDepth === 0) {
-      if (lowerName === "plaintext") break;
-      const rawTextEnd = rawTextEndTags.get(lowerName);
-      if (rawTextEnd) {
-        // Without an end tag, the rest of the document is text.
-        rawTextEnd.lastIndex = cursor + 1;
-        const endTag = rawTextEnd.exec(xhtml);
-        if (!endTag) break;
-        cursor = endTag.index;
-        continue;
+      const index = topByName.get(lowerName);
+      if (index !== undefined) popTo(index);
+    } else {
+      let namespace = parent?.namespace ?? "html";
+      const mathTextException = lowerName === "mglyph" || lowerName === "malignmark";
+      if (parent?.integration === "html" || (parent?.integration === "mathText" && !mathTextException)
+        || (namespace === "math" && parent?.name === "annotation-xml" && lowerName === "svg")
+        || breakout) {
+        namespace = "html";
+      }
+      if (namespace === "html" && (lowerName === "svg" || lowerName === "math")) namespace = lowerName;
+
+      const htmlVoid = namespace === "html" && voidTags.has(lowerName);
+      if (selfClosing && namespace === "html" && !htmlVoid) {
+        parts.push(xhtml.slice(copiedThrough, cursor - 1), `></${name}>`);
+        copiedThrough = cursor + 1;
+      } else if (!selfClosing && !htmlVoid) {
+        if (namespace !== "html" || parent) {
+          const previousSameName = topByName.get(lowerName);
+          topByName.set(lowerName, openElements.length);
+          const integration = xhtmlIntegrationPoint(namespace, lowerName, xhtml, nameEnd, cursor);
+          openElements.push({ name: lowerName, namespace, integration, previousSameName });
+        }
+        if (namespace === "html") {
+          if (lowerName === "plaintext") break;
+          const rawTextEnd = rawTextEndTags.get(lowerName);
+          if (rawTextEnd) {
+            // Without an end tag, the rest of the document is text.
+            rawTextEnd.lastIndex = cursor + 1;
+            const endTag = rawTextEnd.exec(xhtml);
+            if (!endTag) break;
+            cursor = endTag.index;
+            continue;
+          }
+        }
       }
     }
     cursor++;

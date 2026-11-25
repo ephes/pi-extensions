@@ -1,6 +1,6 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { defaultTreeAdapter } from "parse5";
+import { defaultTreeAdapter, parseFragment, serialize } from "parse5";
 import { decodeHtml, expandXhtmlSelfClosingTags, extractTitle, extractReadableText, isBlockedIp, validateUrl } from "../shared/web.js";
 
 test("isBlockedIp blocks private, loopback, and mapped IPv4 ranges", () => {
@@ -652,14 +652,14 @@ test("XHTML self-closing expansion ends regions where the HTML parser does", () 
     ['<p a = \'x > /\'/>', '<p a = \'x > /\'></p>'],
     ['<pre><![CDATA[<p>Use <br/> or <script/></p>]]></pre>', '<pre><![CDATA[<p>Use <br/> or <script></script></p>]]></pre>'],
     ['<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav/>]]>', '<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav></nav>]]>'],
-    ['<MATH><math/><![CDATA[a > <nav/>]]></MATH >', '<MATH><math></math><![CDATA[a > <nav/>]]></MATH >'],
+    ['<MATH><math/><![CDATA[a > <nav/>]]></MATH >', '<MATH><math/><![CDATA[a > <nav/>]]></MATH >'],
     // Raw-text content is opaque up to its end tag, as in the HTML tokenizer.
     [
       '<script>//<![CDATA[\nif (a > b) x = "<!--" + \'<a b="\' + "<x/>";\n//]]></SCRIPT\n><nav/>',
       '<script>//<![CDATA[\nif (a > b) x = "<!--" + \'<a b="\' + "<x/>";\n//]]></SCRIPT\n><nav></nav>',
     ],
     ['<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav/>', '<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav></nav>'],
-    ['<svg><style><x/></style></svg><script/><title>a<b/>', '<svg><style><x></x></style></svg><script></script><title>a<b/>'],
+    ['<svg><style><x/></style></svg><script/><title>a<b/>', '<svg><style><x/></style></svg><script></script><title>a<b/>'],
     ['<plaintext><nav/>', '<plaintext><nav/>'],
     // Quotes outside a value position do not start a quoted value.
     ['<img alt=a=\'b><script src="s"/>', '<img alt=a=\'b><script src="s"></script>'],
@@ -667,6 +667,38 @@ test("XHTML self-closing expansion ends regions where the HTML parser does", () 
     ['<p a b = "c > /"/>', '<p a b = "c > /"></p>'],
   ];
   for (const [input, expected] of cases) assert.equal(expandXhtmlSelfClosingTags(input), expected, input);
+});
+
+test("XHTML expansion preserves native SVG and MathML child boundaries", () => {
+  const svg = '<svg><g/><title/><circle/><foreignObject>'
+    + '<svg><path/></svg><script>const tag = "<nav/>";</script>';
+  const math = '<math><mrow><mi/><mo/></mrow><mtext><mglyph/>';
+  const annotation = '</mtext><annotation-xml encoding="APPLICATION/XHTML&#43;XML">';
+  const native = '</annotation-xml></math><svg/><math/>';
+  const input = svg + '<nav/></foreignObject></svg>' + math + '<textarea/>' + annotation + '<nav/>' + native + '<nav/>';
+  const expected = svg + '<nav></nav></foreignObject></svg>' + math + '<textarea></textarea>'
+    + annotation + '<nav></nav>' + native + '<nav></nav>';
+  const expanded = expandXhtmlSelfClosingTags(input);
+  assert.equal(serialize(parseFragment(expanded)), serialize(parseFragment(expected)));
+  assert.equal(expanded, expected);
+});
+
+test("XHTML expansion follows HTML breakout from foreign content", () => {
+  const input = '<svg><g><font/><font color="red"/><nav/><math><mrow><div/><script/>';
+  const expected = '<svg><g><font/><font color="red"></font><nav></nav><math><mrow><div></div><script></script>';
+  assert.equal(expandXhtmlSelfClosingTags(input), expected);
+});
+
+test("XHTML expansion preserves a slash at the end of an unquoted value", () => {
+  const input = '<section data-path=/docs/><span data-kind=note />text</section>'
+    + '<script src=/assets/>const tag = "<nav/>";</script>'
+    + '<svg data-path=/icons/><path/></svg><nav data-path="/menu/"/>';
+  const expected = '<section data-path=/docs/><span data-kind=note ></span>text</section>'
+    + '<script src=/assets/>const tag = "<nav/>";</script>'
+    + '<svg data-path=/icons/><path/></svg><nav data-path="/menu/"></nav>';
+  const expanded = expandXhtmlSelfClosingTags(input);
+  assert.match(serialize(parseFragment(expanded)), /<section data-path="\/docs\/"><span data-kind="note"><\/span>text<\/section>/);
+  assert.equal(expanded, expected);
 });
 
 test("XHTML self-closing expansion keeps void elements and stays linear", () => {
