@@ -28,8 +28,12 @@ const blockTags = new Set([
   "li", "ul", "ol", "blockquote", "pre", "tr", "table", "hr", "br",
   "address", "caption", "dd", "details", "dialog", "dl", "dt", "fieldset",
   "figcaption", "figure", "form", "legend", "menu", "search", "summary",
+  "center", "dir", "hgroup", "listing", "optgroup", "option", "plaintext", "xmp",
 ]);
-const spaceSeparatedTags = new Set(["title", "td", "th"]);
+// Inline boxes whose content is not part of the surrounding words.
+const spaceSeparatedTags = new Set([
+  "title", "td", "th", "button", "input", "select", "textarea", "img", "audio", "video", "canvas", "embed", "object",
+]);
 
 // Human-visible URLs never include access credentials or signed parameters.
 export function displayUrl(rawUrl: string): string {
@@ -277,41 +281,43 @@ type HtmlParent = DefaultTreeAdapterTypes.ParentNode;
 const voidTags = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 ]);
-const xhtmlLiteralDelimiters = [
-  ["<!--", "-->"],
-  ["<![CDATA[", "]]>"],
-  ["<?", "?>"],
-] as const;
-
+// Ends of the regions the HTML parser reads as one comment or declaration token.
 function skipXhtmlLiteral(xhtml: string, start: number): number | undefined {
-  for (const [open, close] of xhtmlLiteralDelimiters) {
-    if (!xhtml.startsWith(open, start)) continue;
-    const end = xhtml.indexOf(close, start + open.length);
-    return end === -1 ? xhtml.length : end + close.length;
+  const endAfter = (close: string, from: number) => {
+    const index = xhtml.indexOf(close, from);
+    return index === -1 ? xhtml.length : index + close.length;
+  };
+  if (xhtml.startsWith("<!--", start)) {
+    // One forward scan for "-->" or "--!>". Starting at "<!" also ends "<!-->" and "<!--->".
+    for (let dash = xhtml.indexOf("--", start + 2); dash !== -1; dash = xhtml.indexOf("--", dash + 1)) {
+      if (xhtml[dash + 2] === ">") return dash + 3;
+      if (dash >= start + 4 && xhtml.startsWith("!>", dash + 2)) return dash + 4;
+    }
+    return xhtml.length;
   }
+  // CDATA keeps its XML end. That is the HTML parser's rule inside SVG and MathML, the
+  // only place where XHTML-derived CDATA keeps literal markup.
+  if (xhtml.startsWith("<![CDATA[", start)) return endAfter("]]>", start + 9);
+  // Declarations and processing instructions end at the first '>', even inside quotes.
+  if (xhtml.startsWith("<!", start) || xhtml.startsWith("<?", start)) return endAfter(">", start + 2);
+  return undefined;
 }
 
-function findXhtmlMarkupEnd(xhtml: string, start: number, declaration: boolean): number {
-  let subsetDepth = 0;
+// Quotes delimit only attribute values, so a stray quote elsewhere is an ordinary character.
+function findXhtmlTagEnd(xhtml: string, start: number): number {
   let cursor = start;
   while (cursor < xhtml.length) {
     const char = xhtml[cursor];
-    if (char === '"' || char === "'") {
-      const end = xhtml.indexOf(char, cursor + 1);
-      if (end === -1) return xhtml.length;
-      cursor = end + 1;
-      continue;
-    }
-    if (char === ">" && subsetDepth === 0) return cursor;
-    if (char === "<") {
-      if (!declaration) return cursor;
-      cursor = skipXhtmlLiteral(xhtml, cursor) ?? cursor + 1;
-      continue;
-    }
-    // A DOCTYPE's internal subset can contain declarations with their own '>'.
-    if (declaration && char === "[") subsetDepth++;
-    if (char === "]" && subsetDepth > 0) subsetDepth--;
+    // Stop at an unquoted '<' so a new tag can still be found in malformed input.
+    if (char === ">" || char === "<") return cursor;
     cursor++;
+    if (char !== "=") continue;
+    while (cursor < xhtml.length && "\t\n\f\r ".includes(xhtml[cursor])) cursor++;
+    const quote = xhtml[cursor];
+    if (quote !== '"' && quote !== "'") continue;
+    const close = xhtml.indexOf(quote, cursor + 1);
+    if (close === -1) return xhtml.length;
+    cursor = close + 1;
   }
   return cursor;
 }
@@ -322,7 +328,7 @@ function findXhtmlMarkupEnd(xhtml: string, start: number, declaration: boolean):
  */
 export function expandXhtmlSelfClosingTags(xhtml: string): string {
   // The HTML parser recognizes start tags beginning with an ASCII letter.
-  const startTag = /<([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\r />])/y;
+  const startTag = /<([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\f\r />])/y;
   const parts: string[] = [];
   let copiedThrough = 0;
   let cursor = 0;
@@ -332,17 +338,12 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
       cursor = literalEnd;
       continue;
     }
-    if (xhtml.startsWith("<!", cursor)) {
-      cursor = findXhtmlMarkupEnd(xhtml, cursor + 2, true) + 1;
-      continue;
-    }
     const start = cursor++;
     startTag.lastIndex = start;
     const tag = startTag.exec(xhtml);
     if (!tag) continue;
 
-    // Stop at an unquoted '<' so a new tag can still be found in malformed input.
-    cursor = findXhtmlMarkupEnd(xhtml, startTag.lastIndex, false);
+    cursor = findXhtmlTagEnd(xhtml, startTag.lastIndex);
     if (xhtml[cursor] !== ">") continue;
     const name = tag[1];
     if (xhtml[cursor - 1] === "/" && !voidTags.has(name.toLowerCase())) {

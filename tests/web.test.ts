@@ -106,7 +106,10 @@ test("readable HTML preserves inline adjacency and structural boundaries", async
     + "<br>Next line\nAnother line</p><p>Second paragraph</p>"
     + "<div>Before<script>noise</script>After</div>"
     + "<dl><dt>Label</dt><dd>Value</dd></dl>"
-    + "<table><tr><th>One</th><td>Two</td></tr></table></body>";
+    + "<table><tr><th>One</th><td>Two</td></tr></table>"
+    + "<center>Centered</center><label>Name</label><input><label>Age</label>"
+    + "<button>Save</button><button>Cancel</button>"
+    + "<select><option>Red</option><option>Blue</option></select></body>";
   t.mock.method(undici, "fetch", async () => new undici.Response(html, {
     headers: { "content-type": "text/html" },
   }));
@@ -124,6 +127,10 @@ test("readable HTML preserves inline adjacency and structural boundaries", async
     "Label",
     "Value",
     "One Two",
+    "Centered",
+    "Name Age Save Cancel",
+    "Red",
+    "Blue",
   ].join("\n\n"));
 });
 
@@ -595,9 +602,8 @@ test("fetch normalizes quoted XHTML tags and preserves literal CDATA", async (t)
 });
 
 test("XHTML self-closing expansion skips non-tag regions and quoted delimiters", () => {
-  const unchanged = '<?example "<fake/>"?>'
-    + '<!DOCTYPE html [<!-- ]> <fake/> --><!ENTITY sample "<fake/>">]>'
-    + '<!-- a > b <fake/> --><![CDATA[<fake/>]]>'
+  const unchanged = '<?example "<fake/>"?><!DOCTYPE html>'
+    + '<!-- a > b <fake/> --><!-- c --!><![CDATA[<fake/>]]>'
     + '<p data-test="a > b /">Text</p>';
   assert.equal(
     expandXhtmlSelfClosingTags(unchanged + `<script data-test='a > b' src="x/"/>`),
@@ -607,11 +613,25 @@ test("XHTML self-closing expansion skips non-tag regions and quoted delimiters",
   assert.equal(expandXhtmlSelfClosingTags(unfinished), unfinished);
 });
 
+test("XHTML self-closing expansion ends regions where the HTML parser does", () => {
+  const cases: Array<[string, string]> = [
+    ['<?pi a > <script/> ?>', '<?pi a > <script></script> ?>'],
+    ['<!x [ "a > <nav/>', '<!x [ "a > <nav></nav>'],
+    ['<!DOCTYPE html [<!ENTITY e "x">]><nav/>', '<!DOCTYPE html [<!ENTITY e "x">]><nav></nav>'],
+    ['<!--><nav/><!---><nav/><!--!><nav/>-->', '<!--><nav></nav><!---><nav></nav><!--!><nav/>-->'],
+    ['<p a"b/><nav\f/>', '<p a"b></p><nav\f></nav>'],
+    ['<p a = \'x > /\'/>', '<p a = \'x > /\'></p>'],
+  ];
+  for (const [input, expected] of cases) assert.equal(expandXhtmlSelfClosingTags(input), expected, input);
+});
+
 test("XHTML self-closing expansion keeps void elements and stays linear", () => {
   assert.equal(expandXhtmlSelfClosingTags('<br/><IMG src="a"/><div class="x"/>'), '<br/><IMG src="a"/><div class="x"></div>');
   const started = performance.now();
   expandXhtmlSelfClosingTags("<a ".repeat(500_000));
   expandXhtmlSelfClosingTags("<a".repeat(500_000));
+  expandXhtmlSelfClosingTags("<!---->".repeat(200_000));
+  expandXhtmlSelfClosingTags('<a b="x" '.repeat(200_000));
   assert.ok(performance.now() - started < 2_000);
 });
 
