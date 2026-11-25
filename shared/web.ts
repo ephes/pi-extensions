@@ -26,7 +26,10 @@ const noiseTags = new Set(["script", "style", "noscript", "svg", "iframe", "nav"
 const blockTags = new Set([
   "p", "div", "section", "article", "main", "h1", "h2", "h3", "h4", "h5", "h6",
   "li", "ul", "ol", "blockquote", "pre", "tr", "table", "hr", "br",
+  "address", "caption", "dd", "details", "dialog", "dl", "dt", "fieldset",
+  "figcaption", "figure", "form", "legend", "menu", "search", "summary",
 ]);
+const spaceSeparatedTags = new Set(["title", "td", "th"]);
 
 // Human-visible URLs never include access credentials or signed parameters.
 export function displayUrl(rawUrl: string): string {
@@ -395,9 +398,13 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
         parts.push("\n");
         continue;
       }
-      const separator = blockTags.has(tagName) ? "\n" : " ";
-      parts.push(separator);
-      pending.push(separator);
+      let separator = "";
+      if (blockTags.has(tagName)) separator = "\n";
+      else if (spaceSeparatedTags.has(tagName)) separator = " ";
+      if (separator) {
+        parts.push(separator);
+        pending.push(separator);
+      }
       for (let i = childNodes.length - 1; i >= 0; i--) pending.push(childNodes[i]);
     } else if (defaultTreeAdapter.isCommentNode(node)) {
       parts.push(" ");

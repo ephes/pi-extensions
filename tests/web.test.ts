@@ -99,6 +99,34 @@ test("extractReadableText removes scripts and preserves readable text blocks", (
   assert.doesNotMatch(text, /color: red/);
 });
 
+test("readable HTML preserves inline adjacency and structural boundaries", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const html = "<head><title>Fixture</title></head><body>Intro"
+    + "<p>un<strong>broken</strong> code AB<em><span>12</span></em>, 12.<b>50</b> and <i>two</i> words"
+    + "<br>Next line\nAnother line</p><p>Second paragraph</p>"
+    + "<div>Before<script>noise</script>After</div>"
+    + "<dl><dt>Label</dt><dd>Value</dd></dl>"
+    + "<table><tr><th>One</th><td>Two</td></tr></table></body>";
+  t.mock.method(undici, "fetch", async () => new undici.Response(html, {
+    headers: { "content-type": "text/html" },
+  }));
+
+  const page = await fetchReadablePage("http://public.example/");
+  assert.equal(page.title, "Fixture");
+  assert.equal(page.content, [
+    "Fixture Intro",
+    "unbroken code AB12, 12.50 and two words",
+    "Next line",
+    "Another line",
+    "Second paragraph",
+    "Before",
+    "After",
+    "Label",
+    "Value",
+    "One Two",
+  ].join("\n\n"));
+});
+
 test("decodeHtml decodes supported entities", () => {
   assert.equal(decodeHtml("Tom &amp; Jerry &lt;3&nbsp;\"quoted\"&#39;"), 'Tom & Jerry <3 "quoted"\'');
 });
