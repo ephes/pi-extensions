@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Recognize quoted attribute delimiters when closing self-closing XHTML elements in `web_content` and preserve literal markup in comments, CDATA, processing instructions and declarations.
+
 - Cap complete Kagi search text at 24,000 UTF-16 code units, reserving space for the query label, related searches, and truncation notice while preserving whole result rows.
 - Keep the first occurrence of each exact Kagi related term before applying the retained count, with duplicates still included in the original count.
 

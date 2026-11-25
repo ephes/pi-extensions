@@ -548,6 +548,37 @@ test("fetch closes self-closing XHTML elements before HTML parsing", async (t) =
   assert.equal(page.content, "X\n\nBody\n\ntext\n\nMore");
 });
 
+test("fetch normalizes quoted XHTML tags and preserves literal CDATA", async (t) => {
+  t.mock.method(dns, "lookup", async () => approved);
+  const xhtml = '<head><title>Example</title><script data-test="a > b"/></head>'
+    + '<body><p>After script</p><math xmlns="http://www.w3.org/1998/Math/MathML">'
+    + '<mrow><![CDATA[literal <sample/> text]]></mrow></math></body>';
+  const mediaTypes = ["application/xhtml+xml", "text/html"];
+  t.mock.method(undici, "fetch", async () => new undici.Response(xhtml, {
+    headers: { "content-type": mediaTypes.shift()! },
+  }));
+
+  const page = await fetchReadablePage("http://public.example/");
+  assert.equal(page.title, "Example");
+  assert.match(page.content, /After script/);
+  assert.match(page.content, /literal <sample\/> text/);
+
+  assert.equal((await fetchReadablePage("http://public.example/")).content, "Example");
+});
+
+test("XHTML self-closing expansion skips non-tag regions and quoted delimiters", () => {
+  const unchanged = '<?example "<fake/>"?>'
+    + '<!DOCTYPE html [<!-- ]> <fake/> --><!ENTITY sample "<fake/>">]>'
+    + '<!-- a > b <fake/> --><![CDATA[<fake/>]]>'
+    + '<p data-test="a > b /">Text</p>';
+  assert.equal(
+    expandXhtmlSelfClosingTags(unchanged + `<script data-test='a > b' src="x/"/>`),
+    unchanged + `<script data-test='a > b' src="x/"></script>`,
+  );
+  const unfinished = '<!-- <fake/>';
+  assert.equal(expandXhtmlSelfClosingTags(unfinished), unfinished);
+});
+
 test("XHTML self-closing expansion keeps void elements and stays linear", () => {
   assert.equal(expandXhtmlSelfClosingTags('<br/><IMG src="a"/><div class="x"/>'), '<br/><IMG src="a"/><div class="x"></div>');
   const started = performance.now();

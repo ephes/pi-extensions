@@ -274,16 +274,82 @@ type HtmlParent = DefaultTreeAdapterTypes.ParentNode;
 const voidTags = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 ]);
-// The attribute scan stops at the next "<" or ">", so matching stays linear on hostile input.
-const reSelfClosingTag = /<([A-Za-z][A-Za-z0-9:_.-]*)([^<>]*?)\/>/g;
+const xhtmlLiteralDelimiters = [
+  ["<!--", "-->"],
+  ["<![CDATA[", "]]>"],
+  ["<?", "?>"],
+] as const;
+
+function skipXhtmlLiteral(xhtml: string, start: number): number | undefined {
+  for (const [open, close] of xhtmlLiteralDelimiters) {
+    if (!xhtml.startsWith(open, start)) continue;
+    const end = xhtml.indexOf(close, start + open.length);
+    return end === -1 ? xhtml.length : end + close.length;
+  }
+}
+
+function findXhtmlMarkupEnd(xhtml: string, start: number, declaration: boolean): number {
+  let subsetDepth = 0;
+  let cursor = start;
+  while (cursor < xhtml.length) {
+    const char = xhtml[cursor];
+    if (char === '"' || char === "'") {
+      const end = xhtml.indexOf(char, cursor + 1);
+      if (end === -1) return xhtml.length;
+      cursor = end + 1;
+      continue;
+    }
+    if (char === ">" && subsetDepth === 0) return cursor;
+    if (char === "<") {
+      if (!declaration) return cursor;
+      cursor = skipXhtmlLiteral(xhtml, cursor) ?? cursor + 1;
+      continue;
+    }
+    // A DOCTYPE's internal subset can contain declarations with their own '>'.
+    if (declaration && char === "[") subsetDepth++;
+    if (char === "]" && subsetDepth > 0) subsetDepth--;
+    cursor++;
+  }
+  return cursor;
+}
 
 /**
  * XHTML closes `<script/>`, `<nav/>` and similar elements in place, but the HTML parser would
  * open them and let them swallow the rest of the document. Write explicit end tags first.
  */
 export function expandXhtmlSelfClosingTags(xhtml: string): string {
-  return xhtml.replace(reSelfClosingTag, (tag, name: string, attributes: string) =>
-    voidTags.has(name.toLowerCase()) ? tag : `<${name}${attributes}></${name}>`);
+  // The HTML parser recognizes start tags beginning with an ASCII letter.
+  const startTag = /<([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\r />])/y;
+  const parts: string[] = [];
+  let copiedThrough = 0;
+  let cursor = 0;
+  while ((cursor = xhtml.indexOf("<", cursor)) !== -1) {
+    const literalEnd = skipXhtmlLiteral(xhtml, cursor);
+    if (literalEnd !== undefined) {
+      cursor = literalEnd;
+      continue;
+    }
+    if (xhtml.startsWith("<!", cursor)) {
+      cursor = findXhtmlMarkupEnd(xhtml, cursor + 2, true) + 1;
+      continue;
+    }
+    const start = cursor++;
+    startTag.lastIndex = start;
+    const tag = startTag.exec(xhtml);
+    if (!tag) continue;
+
+    // Stop at an unquoted '<' so a new tag can still be found in malformed input.
+    cursor = findXhtmlMarkupEnd(xhtml, startTag.lastIndex, false);
+    if (xhtml[cursor] !== ">") continue;
+    const name = tag[1];
+    if (xhtml[cursor - 1] === "/" && !voidTags.has(name.toLowerCase())) {
+      parts.push(xhtml.slice(copiedThrough, cursor - 1), `></${name}>`);
+      copiedThrough = cursor + 1;
+    }
+    cursor++;
+  }
+  parts.push(xhtml.slice(copiedThrough));
+  return parts.join("");
 }
 
 function findHtmlChild(parent: HtmlParent | undefined, tagName: string) {
