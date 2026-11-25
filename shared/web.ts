@@ -32,7 +32,7 @@ const blockTags = new Set([
 ]);
 // Inline boxes whose content is not part of the surrounding words.
 const spaceSeparatedTags = new Set([
-  "title", "td", "th", "button", "input", "select", "textarea", "img", "audio", "video", "canvas", "embed", "object",
+  "td", "th", "button", "input", "select", "textarea", "img", "audio", "video", "canvas", "embed", "object",
 ]);
 
 // Human-visible URLs never include access credentials or signed parameters.
@@ -537,7 +537,7 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
       parts.push(node.value);
     } else if (defaultTreeAdapter.isElementNode(node)) {
       const { tagName, childNodes } = node;
-      if (noiseTags.has(tagName) || (tagName === "title" && node !== titleElement)) {
+      if (noiseTags.has(tagName) || tagName === "title") {
         parts.push("\n");
         continue;
       }

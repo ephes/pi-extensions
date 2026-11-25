@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Use the HTML head title only as the `web_content` heading. Pages with no readable body text return the existing extraction error.
 - Preserve words split by HTML comment markers in `web_content`.
 - Expand self-closing XHTML tags with Unicode or punctuation in their names so `web_content` retains the following readable content.
 - Preserve literal XHTML CDATA at SVG and MathML integration points while expanding later HTML tags in `web_content`.
