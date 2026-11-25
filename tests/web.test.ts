@@ -624,6 +624,14 @@ test("XHTML self-closing expansion ends regions where the HTML parser does", () 
     ['<pre><![CDATA[<p>Use <br/> or <script/></p>]]></pre>', '<pre><![CDATA[<p>Use <br/> or <script></script></p>]]></pre>'],
     ['<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav/>]]>', '<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav></nav>]]>'],
     ['<MATH><math/><![CDATA[a > <nav/>]]></MATH >', '<MATH><math></math><![CDATA[a > <nav/>]]></MATH >'],
+    // Raw-text content is opaque up to its end tag, as in the HTML tokenizer.
+    [
+      '<script>//<![CDATA[\nif (a > b) x = "<!--" + \'<a b="\' + "<x/>";\n//]]></SCRIPT\n><nav/>',
+      '<script>//<![CDATA[\nif (a > b) x = "<!--" + \'<a b="\' + "<x/>";\n//]]></SCRIPT\n><nav></nav>',
+    ],
+    ['<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav/>', '<style>a::after { content: "<?" }</style><textarea><br/></textarea><nav></nav>'],
+    ['<svg><style><x/></style></svg><script/><title>a<b/>', '<svg><style><x></x></style></svg><script></script><title>a<b/>'],
+    ['<plaintext><nav/>', '<plaintext><nav/>'],
   ];
   for (const [input, expected] of cases) assert.equal(expandXhtmlSelfClosingTags(input), expected, input);
 });
@@ -635,6 +643,7 @@ test("XHTML self-closing expansion keeps void elements and stays linear", () => 
   expandXhtmlSelfClosingTags("<a".repeat(500_000));
   expandXhtmlSelfClosingTags("<!---->".repeat(200_000));
   expandXhtmlSelfClosingTags('<a b="x" '.repeat(200_000));
+  expandXhtmlSelfClosingTags("<script>".repeat(200_000));
   assert.ok(performance.now() - started < 2_000);
 });
 

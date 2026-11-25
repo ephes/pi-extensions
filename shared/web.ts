@@ -303,6 +303,12 @@ function skipXhtmlLiteral(xhtml: string, start: number, foreign: boolean): numbe
   return undefined;
 }
 
+// The HTML tokenizer reads these elements' content as text up to the matching end tag.
+const rawTextEndTags = new Map(
+  ["iframe", "noembed", "noframes", "noscript", "script", "style", "textarea", "title", "xmp"]
+    .map(name => [name, new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi")]),
+);
+
 // Quotes delimit only attribute values, so a stray quote elsewhere is an ordinary character.
 function findXhtmlTagEnd(xhtml: string, start: number): number {
   let cursor = start;
@@ -358,6 +364,17 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
       copiedThrough = cursor + 1;
     } else if (!selfClosing && foreignRoot) {
       foreignDepth++;
+    } else if (!selfClosing && foreignDepth === 0) {
+      if (lowerName === "plaintext") break;
+      const rawTextEnd = rawTextEndTags.get(lowerName);
+      if (rawTextEnd) {
+        // Without an end tag, the rest of the document is text.
+        rawTextEnd.lastIndex = cursor + 1;
+        const endTag = rawTextEnd.exec(xhtml);
+        if (!endTag) break;
+        cursor = endTag.index;
+        continue;
+      }
     }
     cursor++;
   }
