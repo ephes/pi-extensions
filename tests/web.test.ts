@@ -621,6 +621,9 @@ test("XHTML self-closing expansion ends regions where the HTML parser does", () 
     ['<!--><nav/><!---><nav/><!--!><nav/>-->', '<!--><nav></nav><!---><nav></nav><!--!><nav/>-->'],
     ['<p a"b/><nav\f/>', '<p a"b></p><nav\f></nav>'],
     ['<p a = \'x > /\'/>', '<p a = \'x > /\'></p>'],
+    ['<pre><![CDATA[<p>Use <br/> or <script/></p>]]></pre>', '<pre><![CDATA[<p>Use <br/> or <script></script></p>]]></pre>'],
+    ['<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav/>]]>', '<svg><![CDATA[a > <nav/>]]></svg><![CDATA[a > <nav></nav>]]>'],
+    ['<MATH><math/><![CDATA[a > <nav/>]]></MATH >', '<MATH><math></math><![CDATA[a > <nav/>]]></MATH >'],
   ];
   for (const [input, expected] of cases) assert.equal(expandXhtmlSelfClosingTags(input), expected, input);
 });

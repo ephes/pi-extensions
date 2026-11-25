@@ -282,7 +282,7 @@ const voidTags = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 ]);
 // Ends of the regions the HTML parser reads as one comment or declaration token.
-function skipXhtmlLiteral(xhtml: string, start: number): number | undefined {
+function skipXhtmlLiteral(xhtml: string, start: number, foreign: boolean): number | undefined {
   const endAfter = (close: string, from: number) => {
     const index = xhtml.indexOf(close, from);
     return index === -1 ? xhtml.length : index + close.length;
@@ -295,10 +295,10 @@ function skipXhtmlLiteral(xhtml: string, start: number): number | undefined {
     }
     return xhtml.length;
   }
-  // CDATA keeps its XML end. That is the HTML parser's rule inside SVG and MathML, the
-  // only place where XHTML-derived CDATA keeps literal markup.
-  if (xhtml.startsWith("<![CDATA[", start)) return endAfter("]]>", start + 9);
-  // Declarations and processing instructions end at the first '>', even inside quotes.
+  // Inside SVG and MathML, CDATA ends at "]]>". Elsewhere the HTML parser reads it as a
+  // bogus comment, like the declarations and processing instructions below.
+  if (foreign && xhtml.startsWith("<![CDATA[", start)) return endAfter("]]>", start + 9);
+  // Declarations, processing instructions and HTML-content CDATA end at the first '>', even inside quotes.
   if (xhtml.startsWith("<!", start) || xhtml.startsWith("<?", start)) return endAfter(">", start + 2);
   return undefined;
 }
@@ -328,12 +328,14 @@ function findXhtmlTagEnd(xhtml: string, start: number): number {
  */
 export function expandXhtmlSelfClosingTags(xhtml: string): string {
   // The HTML parser recognizes start tags beginning with an ASCII letter.
-  const startTag = /<([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\f\r />])/y;
+  const startTag = /<(\/?)([A-Za-z][A-Za-z0-9:_.-]*)(?=[\t\n\f\r />])/y;
   const parts: string[] = [];
   let copiedThrough = 0;
   let cursor = 0;
+  // Open svg/math elements. This approximates the parser's foreign content, where CDATA is literal.
+  let foreignDepth = 0;
   while ((cursor = xhtml.indexOf("<", cursor)) !== -1) {
-    const literalEnd = skipXhtmlLiteral(xhtml, cursor);
+    const literalEnd = skipXhtmlLiteral(xhtml, cursor, foreignDepth > 0);
     if (literalEnd !== undefined) {
       cursor = literalEnd;
       continue;
@@ -345,10 +347,17 @@ export function expandXhtmlSelfClosingTags(xhtml: string): string {
 
     cursor = findXhtmlTagEnd(xhtml, startTag.lastIndex);
     if (xhtml[cursor] !== ">") continue;
-    const name = tag[1];
-    if (xhtml[cursor - 1] === "/" && !voidTags.has(name.toLowerCase())) {
+    const [, endSlash, name] = tag;
+    const lowerName = name.toLowerCase();
+    const foreignRoot = lowerName === "svg" || lowerName === "math";
+    const selfClosing = xhtml[cursor - 1] === "/";
+    if (endSlash) {
+      if (foreignRoot && foreignDepth > 0) foreignDepth--;
+    } else if (selfClosing && !voidTags.has(lowerName)) {
       parts.push(xhtml.slice(copiedThrough, cursor - 1), `></${name}>`);
       copiedThrough = cursor + 1;
+    } else if (!selfClosing && foreignRoot) {
+      foreignDepth++;
     }
     cursor++;
   }
