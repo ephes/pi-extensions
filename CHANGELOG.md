@@ -26,13 +26,11 @@
 - Preserve the bundled definition discovery limit refusal if closing a file or directory also fails, discarding the entire inventory.
 
 - Reject Kagi queries with unpaired surrogates before progress or request URL construction.
-- Refuse unpaired surrogates in decoded JSON member names and string values in Kagi responses and agent workflow protocol lines.
 - Reject already cancelled web fetches with the original abort reason before starting the deadline.
 - Fail Web and Kagi response reads after 256 consecutive empty chunks with a fixed retry diagnostic and cancel the incomplete body.
 - Clip agent workflow chain handoffs at Unicode scalar boundaries within the shared UTF-16 allowance.
 - Reject unpaired surrogates in submitted workflow task text, agent names and working-directory labels before staging prompts.
 - Report already cancelled Kagi calls as `AbortError` before checking credentials or starting the deadline.
-- Bound total array elements before native JSON decoding to 16,384 per Kagi response and 65,536 per agent workflow protocol line.
 - Honor cancellation and the deadline during web dispatcher cleanup while preserving earlier fetch failures.
 - Decode readable web responses using their supported Content-Type charset, with UTF-8 as the fallback.
 - Preserve Kagi search outcomes when body cancellation or reader release fails.
@@ -41,8 +39,6 @@
 - Decode Kagi responses as they stream and consolidate tiny text fragments to reduce memory use.
 - Require HTTP 200 without Content-Range for readable web fetches and cancel refused response bodies unread.
 - Keep readable content free of replacement characters caused by cutting a UTF-8 character at the source-byte limit.
-- Limit JSON object members during parsing to 16,384 per Kagi response and 65,536 per agent workflow protocol line.
-- Refuse JSON numbers that decode to infinity in Kagi responses and agent workflow protocol lines, including ignored fields and events.
 - Clip `web_content` at a Unicode scalar boundary within its UTF-16 output limit and report the actual retained length.
 - Apply the Kagi result limit to retained rows so later usable hits can fill slots left by oversized URLs. Report omitted hits as truncated.
 
@@ -68,10 +64,8 @@
 - Refuse chains above 32 steps before prompt creation or process launch, preserving ordered execution and bounded literal handoffs at the limit.
 - Iterate bundled definitions with the public directory API; refuse the entire discovery above 256 entries or 4 MiB actual reads with one safe diagnostic and descriptor cleanup.
 
-- Admit Kagi JSON with unique decoded keys, at most 64 container levels and 16,384 containers before projection, preserving valid extension fields and using one safe parsing diagnostic.
 - Decode bounded agent-definition bytes with fatal UTF-8 validation, isolating invalid files through existing filename-only diagnostics.
 
-- Refuse duplicate decoded JSON member names in every agent protocol line before consumed-message validation; bound parser depth/container work through the public JSON visitor.
 - Share parallel history/task/stderr retention budgets, retain all task outcomes and independent answers within a shared 1 MiB output allowance, and disclose answer/metadata omissions.
 
 - Admit task input before preparation (1 MiB per task, 4 MiB per workflow including system prompts/labels); retire owned descendants on successful exit as well as failures, retaining answers and reporting unconfirmed cleanup. A transient EPERM from macOS while only zombies of the group remain no longer fails a successful run; a persistent EPERM still does.

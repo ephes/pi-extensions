@@ -8,7 +8,6 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { parseUnambiguousJson } from "../../shared/json.js";
 import { clipText, hasUnpairedSurrogate } from "../../shared/text.js";
 import { type AgentConfig, discoverBundledAgents, formatAgentList } from "./agents.js";
 import { REVIEWER_MODEL, resolveAgentModel, resolveReviewerModel, type ModelRef } from "./model_resolution.js";
@@ -726,7 +725,7 @@ async function runSingleAgent(
 
         let event: unknown;
         try {
-          event = parseUnambiguousJson(line);
+          event = JSON.parse(line);
         } catch {
           failProtocol("Agent protocol contains invalid JSON.");
           return;

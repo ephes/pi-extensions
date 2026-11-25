@@ -1646,43 +1646,6 @@ test("successful close retires a redirected descendant before resolving", async 
   assert.match(result.content[0].text!, /completed answer/);
 });
 
-for (const duplicate of [
-  '"type":"agent_end","type":"message_end"',
-  '"type":"message_end","type":"agent_end"',
-  '"type":"message_end","ty\\u0070e":"message_end"',
-]) {
-  test(`duplicate event members fail closed: ${duplicate}`, async (t) => {
-    const { children, execute } = setup(t);
-    const run = execute();
-    children[0].stdout.emit("data", `{${duplicate},"message":{"role":"assistant","content":[{"type":"text","text":"private answer"}],"stopReason":"stop"}}\n`);
-    children[0].emit("close", 0, null);
-    const result = await run;
-    assert.equal(result.isError, true);
-    assert.deepEqual(children[0].signals, ["SIGTERM"]);
-    assert.match(JSON.stringify(result), /invalid JSON/);
-    assert.doesNotMatch(JSON.stringify(result), /private answer/);
-  });
-}
-for (const member of [
-  '"role":"user","role":"assistant"', '"role":"assistant","role":"user"',
-  '"role":"assistant","ro\\u006ce":"assistant"',
-  '"role":"assistant","stopReason":"error","stopReason":"stop"',
-  '"role":"assistant","stopReason":"stop","stopReason":"error"',
-  '"role":"assistant","extra":{"x":0,"x":0}',
-]) {
-  test(`duplicate nested members fail after a completed answer: ${member}`, async (t) => {
-    const { children, execute } = setup(t);
-    const run = execute();
-    children[0].stdout.emit("data", messageLine("first answer"));
-    children[0].stdout.emit("data", `{"type":"message_end","message":{${member},"content":[{"type":"text","text":"private answer"}]}}\n`);
-    children[0].emit("close", 0, null);
-    const result = await run;
-    assert.equal(result.isError, true);
-    assert.match(JSON.stringify(result), /invalid JSON/);
-    assert.doesNotMatch(JSON.stringify(result), /private answer/);
-  });
-}
-
 test("parallel final details share history and answer budgets with all outcomes", async (t) => {
   const { children, execute, render } = setup(t);
   const snapshots: unknown[] = [];

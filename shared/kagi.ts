@@ -1,4 +1,3 @@
-import { parseUnambiguousJson } from "./json.js";
 import { hasUnpairedSurrogate } from "./text.js";
 import { EmptyResponseReadLimitError, MAX_CONSECUTIVE_EMPTY_READS, USER_AGENT } from "./http.js";
 
@@ -231,7 +230,7 @@ export async function searchKagi(query: string, limit?: number, signal?: AbortSi
     const body = await readBody(response, combined);
     combined.throwIfAborted();
     let payload: unknown;
-    try { payload = parseUnambiguousJson(body, 64, 16384, 16384, 16384); }
+    try { payload = JSON.parse(body); }
     catch { throw new Error("Kagi API response is not valid JSON."); }
     return validateResponse(payload);
   };

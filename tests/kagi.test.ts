@@ -817,42 +817,6 @@ test("malformed UTF-8 HTTP error bodies retain status without body evidence", as
   });
 });
 
-for (const body of [
-  '{"data":[],"data":[]}',
-  '{"data":[{"t":0,"url":"private-first","url":"private-last","title":"t"}]}',
-  '{"data":[],"meta":{},"m\\u0065ta":{}}',
-  '{"data":[],"meta":{"id":"x","id":"x"}}',
-  '{"data":[],"extra":{"nested":{"x":1,"x":2}}}',
-  '{"data":[],"extra":' + '['.repeat(64) + '0' + ']'.repeat(64) + '}',
-  '{"data":[],"extra":[' + Array.from({ length: 16384 }, () => '{}').join(',') + ']}',
-  '{"data":[],"extra":[' + '0,'.repeat(16384) + '0]}',
-  '{"data":[],"extra":{' + Array.from({ length: 16383 }, (_, i) => `"k${i}":0`).join(',') + '}}',
-  '{"data":[],"extra":{"x":[1e309]}}',
-  '{"data":[{"t":0,"url":"https://example.com/","title":"t","published":-1e309}]}',
-]) {
-  test(`Kagi structural admission rejects ambiguous or excessive JSON (${body.length} chars, ${body.slice(0, 45)})`, async (t) => {
-    t.mock.method(globalThis, "fetch", async () => new Response(body));
-    for (const run of [() => searchKagi("synthetic"), () => registeredSearch().execute("test", { query: "synthetic" }, undefined, undefined)]) {
-      await assert.rejects(run(), error => {
-        assert.equal((error as Error).message, "Kagi API response is not valid JSON.");
-        return true;
-      });
-    }
-  });
-}
-
-test("Kagi admits multibyte optional extensions at structural boundaries", async (t) => {
-  let body = '{"data":[],"extra":' + '['.repeat(63) + '"Grüße 🦊"' + ']'.repeat(63) + '}';
-  t.mock.method(globalThis, "fetch", async () => new Response(body));
-  assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
-  body = '{"data":[],"extra":[' + Array.from({ length: 16381 }, () => '{}').join(',') + ']}';
-  assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
-  body = '{"data":[],"extra":[' + '0,'.repeat(16383) + '0]}';
-  assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
-  body = '{"data":[],"extra":{' + Array.from({ length: 16382 }, (_, i) => `"k${i}":0`).join(',') + '}}';
-  assert.deepEqual(await searchKagi("synthetic"), JSON.parse(body));
-});
-
 for (const url of [
   "javascript:alert('private-url')", "data:text/plain,private-url", "file:///private-url", "ftp://example.com/private-url",
   "/private-url", "//example.com/private-url", "https:example.com/private-url", "not a private-url", "https://", "https://[invalid/private-url",
