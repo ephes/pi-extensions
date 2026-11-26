@@ -3,7 +3,7 @@ import { decodeHTML, escapeText } from "entities";
 import net from "node:net";
 import type { LookupFunction } from "node:net";
 import { MIMEType } from "node:util";
-import { defaultTreeAdapter, parse, parseFragment, type DefaultTreeAdapterTypes } from "parse5";
+import { defaultTreeAdapter, html as htmlConstants, parse, parseFragment, type DefaultTreeAdapterTypes } from "parse5";
 import undici, { Agent, type Response } from "undici";
 import { EmptyResponseReadLimitError, MAX_CONSECUTIVE_EMPTY_READS, USER_AGENT } from "./http.js";
 import { clipText } from "./text.js";
@@ -526,23 +526,43 @@ export function extractReadableText(html: string): string {
 function extractReadableHtml(html: string): { title?: string; content: string } {
   const document = parse(html);
   const titleElement = findTitleElement(document);
+  const blocks: string[] = [];
   const parts: string[] = [];
+  const endPre = Symbol("end pre");
+  let inPre = false;
+  const flushBlock = () => {
+    const text = parts.join("");
+    parts.length = 0;
+    const block = inPre ? text : text.replace(/\r/g, "").split("\n").map(cleanLine).filter(Boolean).join("\n\n");
+    if (block) blocks.push(block);
+  };
+
   // Walk iteratively so deeply nested markup does not consume the call stack.
-  const pending: Array<DefaultTreeAdapterTypes.ChildNode | string> = [...document.childNodes].reverse();
+  const pending: Array<DefaultTreeAdapterTypes.ChildNode | string | typeof endPre> = [...document.childNodes].reverse();
   while (pending.length) {
     const node = pending.pop()!;
-    if (typeof node === "string") {
+    if (node === endPre) {
+      flushBlock();
+      inPre = false;
+    } else if (typeof node === "string") {
       parts.push(node);
     } else if (defaultTreeAdapter.isTextNode(node)) {
       parts.push(node.value);
     } else if (defaultTreeAdapter.isElementNode(node)) {
       const { tagName, childNodes } = node;
       if (noiseTags.has(tagName) || tagName === "title") {
-        parts.push("\n");
+        if (!inPre) parts.push("\n");
         continue;
       }
       let separator = "";
-      if (blockTags.has(tagName)) separator = "\n";
+      if (inPre) {
+        // Preserve parsed text across nested markup, with explicit line breaks.
+        if (tagName === "br") parts.push("\n");
+      } else if (tagName === "pre" && node.namespaceURI === htmlConstants.NS.HTML) {
+        flushBlock();
+        inPre = true;
+        pending.push(endPre);
+      } else if (blockTags.has(tagName)) separator = "\n";
       else if (spaceSeparatedTags.has(tagName)) separator = " ";
       if (separator) {
         parts.push(separator);
@@ -552,8 +572,8 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
     }
   }
 
-  const content = parts.join("").replace(/\r/g, "").split("\n").map(cleanLine).filter(Boolean).join("\n\n");
-  return { title: readTitle(titleElement), content };
+  flushBlock();
+  return { title: readTitle(titleElement), content: blocks.join("\n\n") };
 }
 
 export function decodeHtml(value: string): string {

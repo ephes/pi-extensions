@@ -107,6 +107,17 @@ test("HTML comments preserve adjacent words, explicit spaces and structural boun
   assert.equal(extractReadableText(html), "code and two words\n\nNext paragraph\n\nOne Two");
 });
 
+test("readable HTML preserves preformatted code layout and cleans surrounding prose", () => {
+  const html = "<p> Before   the example </p>"
+    + "<pre><code>  if (x &lt; 2) {\n\t<em>run</em>();  \n\n  }</code><br>  done\n</pre>"
+    + "<p> After   the example </p>";
+  assert.equal(extractReadableText(html), [
+    "Before the example",
+    "  if (x < 2) {\n\trun();  \n\n  }\n  done\n",
+    "After the example",
+  ].join("\n\n"));
+});
+
 test("readable HTML preserves inline adjacency and structural boundaries", async (t) => {
   t.mock.method(dns, "lookup", async () => approved);
   const html = "<head><title>Fixture</title></head><body>Intro"

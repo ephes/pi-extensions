@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve indentation, spacing and blank lines in HTML preformatted blocks in `web_content`.
 - Use the HTML head title only as the `web_content` heading. Pages with no readable body text return the existing extraction error.
 - Preserve words split by HTML comment markers in `web_content`.
 - Expand self-closing XHTML tags with Unicode or punctuation in their names so `web_content` retains the following readable content.
