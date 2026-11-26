@@ -120,7 +120,7 @@ Set a Kagi API key for `kagi_search`:
 export KAGI_API_KEY="your-api-key"
 ```
 
-The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default. The tool also caps retained rows at this count. It scans results in API order, skips rows with oversized URLs, and stops when the count is reached or the next usable row exceeds the remaining text budget. Each omitted row contributes to the truncation flag.
+The `limit` parameter accepts 1–20 results (default 10). One shared policy rounds it to the nearest integer and clamps it to that range, and non-finite values fall back to the default. The tool also caps retained rows at this count. It scans results in API order until the retained count is reached or the response is exhausted. It shortens or omits optional snippets to fit the remaining text budget, then skips rows whose title, complete URL and publication line still do not fit. It also skips rows with oversized URLs. Each omitted row or snippet contributes to the truncation flag.
 
 Queries must contain only Unicode scalar values and fit within 8,192 UTF-8
 bytes, including surrounding whitespace. The tool and shared `searchKagi`
@@ -137,8 +137,8 @@ The complete search text fits within 24,000 JavaScript UTF-16 code units. The to
 
 The original related-search count includes duplicates across all response rows.
 When at least one result URL is retained, the tool keeps the first ten distinct
-terms in API order. It compares exact terms before shortening them for display
-and reports skipped duplicates as truncation.
+displayed terms in API order. It compares terms after shortening them and
+reports skipped duplicates as truncation.
 
 `Published` metadata accepts Unix seconds (including fractional seconds), strict
 ISO calendar dates (`YYYY-MM-DD`), or explicit-zone ISO timestamps

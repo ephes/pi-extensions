@@ -67,22 +67,19 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (Object.keys(response.meta).some((key) => !["id", "node", "ms", "api_balance"].includes(key))) truncated = true;
       }
 
-      const retainedRelated: string[] = [];
-      const seenRelated = new Set<string>();
+      const retainedRelated = new Set<string>();
       let originalRelatedCount = 0;
       for (const item of response.data) {
         if (item.t !== 1) continue;
         originalRelatedCount += item.list.length;
         for (const term of item.list) {
-          if (retainedRelated.length === RELATED_MAX_COUNT) break;
-          if (seenRelated.has(term)) continue;
-          seenRelated.add(term);
-          retainedRelated.push(clip(term, 128));
+          if (retainedRelated.size === RELATED_MAX_COUNT) break;
+          retainedRelated.add(clip(term, 128));
         }
       }
       const heading = `# Kagi search: ${retainedQuery}`;
-      const relatedText = retainedRelated.length
-        ? "\n\nRelated searches:\n" + retainedRelated.map((term) => `- ${term}`).join("\n")
+      const relatedText = retainedRelated.size
+        ? "\n\nRelated searches:\n" + Array.from(retainedRelated, (term) => `- ${term}`).join("\n")
         : "";
       const rows: string[] = [];
       const urls: string[] = [];
@@ -91,18 +88,26 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (urls.length === limit) { truncated = true; break; }
         // Preserve complete usable URLs rather than returning broken prefixes.
         if (result.url.length > 2048) { truncated = true; continue; }
-        const row = [`${urls.length + 1}. ${clip(result.title, 512)}`, `   URL: ${result.url}`];
-        if (result.snippet) row.push(`   Snippet: ${clip(result.snippet, 2048)}`);
+        const titleAndUrl = `\n\n${urls.length + 1}. ${clip(result.title, 512)}\n   URL: ${result.url}`;
         const published = formatPublishedDate(result.published);
-        if (published) row.push(`   Published: ${published}`);
-        const text = "\n\n" + row.join("\n");
-        if (text.length > remaining) { truncated = true; break; }
+        const publishedLine = published ? `\n   Published: ${published}` : "";
+        const baseLength = titleAndUrl.length + publishedLine.length;
+        if (baseLength > remaining) { truncated = true; continue; }
+
+        let snippetLine = "";
+        if (result.snippet) {
+          const prefix = "\n   Snippet: ";
+          const snippetBudget = Math.min(2048, remaining - baseLength - prefix.length);
+          if (snippetBudget > 0) snippetLine = prefix + clip(result.snippet, snippetBudget);
+          else truncated = true;
+        }
+        const text = titleAndUrl + snippetLine + publishedLine;
         remaining -= text.length;
         rows.push(text);
         urls.push(result.url);
       }
 
-      const relatedCount = urls.length ? retainedRelated.length : 0;
+      const relatedCount = urls.length ? retainedRelated.size : 0;
       if (relatedCount < originalRelatedCount) truncated = true;
       let text = urls.length ? (heading + rows.join("") + relatedText).trim() : results.length
         ? `No results retained for "${retainedQuery}" within the output limits.`

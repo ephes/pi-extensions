@@ -511,7 +511,7 @@ test("registered search bounds retained text, related terms and metadata below t
   const payload = {
     data: [
       ...Array.from({ length: 30 }, (_, i) => ({ t: 0, url: `https://example.com/${i}`, title: "T".repeat(2048), snippet: "S".repeat(8192), published: "P".repeat(2048) })),
-      { t: 1, list: Array.from({ length: 40 }, (_, i) => "R".repeat(4096) + i) },
+      { t: 1, list: Array.from({ length: 40 }, (_, i) => `term-${i}` + "R".repeat(4096)) },
     ],
     meta: { id: "I".repeat(120000), node: "N".repeat(120000), ms: 1, api_balance: 2, extra: "DROP-ME".repeat(10000) },
   };
@@ -551,13 +551,40 @@ test("registered search budgets the heading, maximum related block and notice wi
   assert.match(output, /\n\n\[Search output truncated\.\]$/);
   assert.equal(result.details.truncated, true);
   assert.equal(result.details.originalResultCount, 5);
-  assert.equal(result.details.resultCount, 4);
+  assert.equal(result.details.resultCount, 5);
   assert.equal(result.details.originalRelatedCount, 10);
   assert.equal(result.details.relatedCount, 10);
-  const urls = rows.slice(0, 4).map((row) => row.url);
+  const urls = rows.map((row) => row.url);
   assert.deepEqual(result.details.urls, urls);
   assert.deepEqual(output.match(/^ {3}URL: .+$/gm), urls.map((url) => `   URL: ${url}`));
+  const snippets = output.match(/^ {3}Snippet: .+$/gm) ?? [];
+  assert.equal(snippets.length, 5);
+  assert.match(snippets[4], /^ {3}Snippet: S+…$/);
+  assert.equal((output.match(/^ {3}Published: 2025-01-01$/gm) ?? []).length, 5);
   assert.deepEqual(output.match(/^- .+$/gm), related.map((term) => `- ${term}`));
+});
+
+test("registered search continues after a row cannot fit even without its snippet", async (t) => {
+  const packed = Array.from({ length: 5 }, (_, i) => ({
+    t: 0,
+    url: `https://example.test/${i}/`.padEnd(2048, "u"),
+    title: "T".repeat(512),
+    snippet: "S".repeat(2048),
+  }));
+  const tooLong = { t: 0, url: "https://example.test/long/".padEnd(1200, "u"), title: "Unfit row", snippet: "Extra text" };
+  const later = { t: 0, url: "https://example.test/short?keep=%2F#target", title: "Later row" };
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [...packed, tooLong, later] }));
+
+  const result = await registeredSearch().execute("test", { query: "query", limit: 6 }, undefined, undefined);
+  const output = result.content[0].text;
+  assert.deepEqual(result.details.urls, [...packed.map((row) => row.url), later.url]);
+  assert.equal(result.details.originalResultCount, 7);
+  assert.equal(result.details.resultCount, 6);
+  assert.equal(result.details.truncated, true);
+  assert.ok(output.length <= 24_000);
+  assert.ok(output.includes(`6. Later row\n   URL: ${later.url}`));
+  assert.doesNotMatch(output, /Unfit row/);
+  assert.match(output, /\[Search output truncated\.\]$/);
 });
 
 test("registered search counts all related terms without flattening the response", async (t) => {
@@ -617,6 +644,26 @@ test("registered search retains the first ten exact distinct related terms acros
   assert.equal(result.details.resultCount, 1);
   assert.equal(result.details.originalResultCount, 1);
   assert.deepEqual(result.details.urls, [url]);
+  assert.equal(result.details.truncated, true);
+  assert.match(result.content[0].text, /\[Search output truncated\.\]$/);
+});
+
+test("registered search fills related slots with distinct displayed terms after clipping", async (t) => {
+  const prefix = "R".repeat(127);
+  const visible = prefix + "…";
+  const first = [prefix + " first", prefix + " second", visible];
+  const later = Array.from({ length: 9 }, (_, index) => `Related term ${index + 1}`);
+  t.mock.method(globalThis, "fetch", async () => Response.json({ data: [
+    { t: 1, list: first },
+    { t: 0, url: "https://example.test/result", title: "Result" },
+    { t: 1, list: later },
+    { t: 1, list: ["Beyond the limit"] },
+  ] }));
+
+  const result = await registeredSearch().execute("test", { query: "query" }, undefined, undefined);
+  assert.deepEqual(result.content[0].text.match(/^- .+$/gm), [visible, ...later].map((term) => `- ${term}`));
+  assert.equal(result.details.originalRelatedCount, 13);
+  assert.equal(result.details.relatedCount, 10);
   assert.equal(result.details.truncated, true);
   assert.match(result.content[0].text, /\[Search output truncated\.\]$/);
 });
