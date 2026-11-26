@@ -91,12 +91,20 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (urls.length === limit) { truncated = true; break; }
         // Preserve complete usable URLs rather than returning broken prefixes.
         if (result.url.length > 2048) { truncated = true; continue; }
-        const row = [`${urls.length + 1}. ${clip(result.title, 512)}`, `   URL: ${result.url}`];
-        if (result.snippet) row.push(`   Snippet: ${clip(result.snippet, 2048)}`);
+        const titleAndUrl = `\n\n${urls.length + 1}. ${clip(result.title, 512)}\n   URL: ${result.url}`;
         const published = formatPublishedDate(result.published);
-        if (published) row.push(`   Published: ${published}`);
-        const text = "\n\n" + row.join("\n");
-        if (text.length > remaining) { truncated = true; break; }
+        const publishedLine = published ? `\n   Published: ${published}` : "";
+        const baseLength = titleAndUrl.length + publishedLine.length;
+        if (baseLength > remaining) { truncated = true; continue; }
+
+        let snippetLine = "";
+        if (result.snippet) {
+          const prefix = "\n   Snippet: ";
+          const snippetBudget = Math.min(2048, remaining - baseLength - prefix.length);
+          if (snippetBudget > 0) snippetLine = prefix + clip(result.snippet, snippetBudget);
+          else truncated = true;
+        }
+        const text = titleAndUrl + snippetLine + publishedLine;
         remaining -= text.length;
         rows.push(text);
         urls.push(result.url);

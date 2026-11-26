@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fit more Kagi results near the text cap by shortening optional snippets and continuing past rows that still cannot fit with a complete URL.
+
 - Omit HTML elements marked `hidden` and their descendants from readable `web_content` text.
 - Preserve indentation, spacing and blank lines in HTML preformatted blocks in `web_content`. Block children, table cells and media inside them stay separated, and whitespace-only blocks are dropped.
 - Use the HTML head title only as the `web_content` heading. Pages with no readable body text return the existing extraction error.
