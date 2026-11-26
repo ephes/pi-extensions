@@ -137,8 +137,8 @@ The complete search text fits within 24,000 JavaScript UTF-16 code units. The to
 
 The original related-search count includes duplicates across all response rows.
 When at least one result URL is retained, the tool keeps the first ten distinct
-terms in API order. It compares exact terms before shortening them for display
-and reports skipped duplicates as truncation.
+displayed terms in API order. It compares terms after shortening them and
+reports skipped duplicates as truncation.
 
 `Published` metadata accepts Unix seconds (including fractional seconds), strict
 ISO calendar dates (`YYYY-MM-DD`), or explicit-zone ISO timestamps

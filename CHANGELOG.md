@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Deduplicate Kagi related searches after shortening them for display so identical suggestions share one slot.
 - Fit more Kagi results near the text cap by shortening optional snippets and continuing past rows that still cannot fit with a complete URL.
 
 - Omit HTML elements marked `hidden` and their descendants from readable `web_content` text.

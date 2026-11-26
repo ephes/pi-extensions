@@ -67,22 +67,19 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         if (Object.keys(response.meta).some((key) => !["id", "node", "ms", "api_balance"].includes(key))) truncated = true;
       }
 
-      const retainedRelated: string[] = [];
-      const seenRelated = new Set<string>();
+      const retainedRelated = new Set<string>();
       let originalRelatedCount = 0;
       for (const item of response.data) {
         if (item.t !== 1) continue;
         originalRelatedCount += item.list.length;
         for (const term of item.list) {
-          if (retainedRelated.length === RELATED_MAX_COUNT) break;
-          if (seenRelated.has(term)) continue;
-          seenRelated.add(term);
-          retainedRelated.push(clip(term, 128));
+          if (retainedRelated.size === RELATED_MAX_COUNT) break;
+          retainedRelated.add(clip(term, 128));
         }
       }
       const heading = `# Kagi search: ${retainedQuery}`;
-      const relatedText = retainedRelated.length
-        ? "\n\nRelated searches:\n" + retainedRelated.map((term) => `- ${term}`).join("\n")
+      const relatedText = retainedRelated.size
+        ? "\n\nRelated searches:\n" + Array.from(retainedRelated, (term) => `- ${term}`).join("\n")
         : "";
       const rows: string[] = [];
       const urls: string[] = [];
@@ -110,7 +107,7 @@ export default function kagiSearchExtension(pi: ExtensionAPI) {
         urls.push(result.url);
       }
 
-      const relatedCount = urls.length ? retainedRelated.length : 0;
+      const relatedCount = urls.length ? retainedRelated.size : 0;
       if (relatedCount < originalRelatedCount) truncated = true;
       let text = urls.length ? (heading + rows.join("") + relatedText).trim() : results.length
         ? `No results retained for "${retainedQuery}" within the output limits.`
