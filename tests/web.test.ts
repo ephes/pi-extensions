@@ -118,6 +118,25 @@ test("readable HTML preserves preformatted code layout and cleans surrounding pr
   ].join("\n\n"));
 });
 
+test("readable HTML keeps block, table and media children of preformatted blocks apart", () => {
+  assert.equal(
+    extractReadableText("<p>A</p><pre><div>line one</div><div>line two</div></pre>"),
+    "A\n\nline one\nline two",
+  );
+  assert.equal(extractReadableText("<pre><div>  one</div>\n<div>  two</div>\n</pre>"), "  one\n  two\n");
+  assert.equal(
+    extractReadableText("<pre><table><tr><td>1</td><td>x</td></tr><tr><td>2</td><td>y</td></tr></table></pre>"),
+    "1 x\n2 y",
+  );
+  assert.equal(extractReadableText("<pre>a<img alt=z>b c<input> d</pre>"), "a b c d");
+  assert.equal(extractReadableText("<pre>before<script>x()</script>after</pre>"), "before\nafter");
+});
+
+test("readable HTML drops whitespace-only preformatted blocks", () => {
+  assert.equal(extractReadableText("<p>A</p><pre>   \n  </pre><p>B</p>"), "A\n\nB");
+  assert.equal(extractReadableText("<pre> \n</pre>"), "");
+});
+
 test("readable HTML omits hidden subtrees and keeps visible text in order", () => {
   const html = "<article><p>First paragraph</p>"
     + "<section hidden><p>Hidden placeholder</p></section>"

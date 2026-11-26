@@ -529,37 +529,73 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
   const blocks: string[] = [];
   const parts: string[] = [];
   const endPre = Symbol("end pre");
+  const preLineBreak = Symbol("pre line break");
+  const preSpace = Symbol("pre space");
   let inPre = false;
+  // Boundary owed inside <pre>; it is added before the next text unless either side already has one.
+  let preBoundary: "" | "\n" | " " = "";
   const flushBlock = () => {
     const text = parts.join("");
     parts.length = 0;
-    const block = inPre ? text : text.replace(/\r/g, "").split("\n").map(cleanLine).filter(Boolean).join("\n\n");
+    preBoundary = "";
+    // A preformatted block keeps its text as parsed unless it holds only whitespace.
+    const block = inPre
+      ? (text.trim() ? text : "")
+      : text.replace(/\r/g, "").split("\n").map(cleanLine).filter(Boolean).join("\n\n");
     if (block) blocks.push(block);
+  };
+  const requestPreBoundary = (boundary: "\n" | " ") => {
+    if (preBoundary !== "\n") preBoundary = boundary;
+  };
+  const pushText = (text: string) => {
+    if (!text) return;
+    if (inPre && preBoundary) {
+      const boundary = preBoundary;
+      preBoundary = "";
+      const hasBoundary = (char: string) => (boundary === "\n" ? char === "\n" : /\s/.test(char));
+      const previous = parts.at(-1)?.at(-1);
+      if (previous !== undefined && !hasBoundary(previous) && !hasBoundary(text[0])) parts.push(boundary);
+    }
+    parts.push(text);
   };
 
   // Walk iteratively so deeply nested markup does not consume the call stack.
-  const pending: Array<DefaultTreeAdapterTypes.ChildNode | string | typeof endPre> = [...document.childNodes].reverse();
+  const pending: Array<DefaultTreeAdapterTypes.ChildNode | string | typeof endPre | typeof preLineBreak | typeof preSpace> =
+    [...document.childNodes].reverse();
   while (pending.length) {
     const node = pending.pop()!;
     if (node === endPre) {
       flushBlock();
       inPre = false;
+    } else if (node === preLineBreak) {
+      requestPreBoundary("\n");
+    } else if (node === preSpace) {
+      requestPreBoundary(" ");
     } else if (typeof node === "string") {
-      parts.push(node);
+      pushText(node);
     } else if (defaultTreeAdapter.isTextNode(node)) {
-      parts.push(node.value);
+      pushText(node.value);
     } else if (defaultTreeAdapter.isElementNode(node)) {
       const { tagName, childNodes, namespaceURI, attrs } = node;
       const isHtml = namespaceURI === htmlConstants.NS.HTML;
       if (isHtml && attrs.some(attr => attr.name === "hidden")) continue;
       if (noiseTags.has(tagName) || tagName === "title") {
-        if (!inPre) parts.push("\n");
+        if (inPre) requestPreBoundary("\n");
+        else pushText("\n");
         continue;
       }
       let separator = "";
       if (inPre) {
-        // Preserve parsed text across nested markup, with explicit line breaks.
-        if (tagName === "br") parts.push("\n");
+        // Preserve parsed text across nested markup. A <br> always breaks the line.
+        // Block and space-separated children are kept apart from adjacent text.
+        if (tagName === "br") pushText("\n");
+        else if (blockTags.has(tagName)) {
+          requestPreBoundary("\n");
+          pending.push(preLineBreak);
+        } else if (spaceSeparatedTags.has(tagName)) {
+          requestPreBoundary(" ");
+          pending.push(preSpace);
+        }
       } else if (isHtml && tagName === "pre") {
         flushBlock();
         inPre = true;
@@ -567,7 +603,7 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
       } else if (blockTags.has(tagName)) separator = "\n";
       else if (spaceSeparatedTags.has(tagName)) separator = " ";
       if (separator) {
-        parts.push(separator);
+        pushText(separator);
         pending.push(separator);
       }
       for (let i = childNodes.length - 1; i >= 0; i--) pending.push(childNodes[i]);
