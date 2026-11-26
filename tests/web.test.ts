@@ -118,6 +118,16 @@ test("readable HTML preserves preformatted code layout and cleans surrounding pr
   ].join("\n\n"));
 });
 
+test("readable HTML omits hidden subtrees and keeps visible text in order", () => {
+  const html = "<article><p>First paragraph</p>"
+    + "<section hidden><p>Hidden placeholder</p></section>"
+    + '<p>Second para<span hidden="">hidden inline text</span>graph</p>'
+    + '<pre><code>  keep<span hidden="until-found">hidden code</span>();</code></pre>'
+    + '<p hidden="false">Another hidden placeholder</p>'
+    + '<p aria-hidden="true">Third paragraph</p></article>';
+  assert.equal(extractReadableText(html), "First paragraph\n\nSecond paragraph\n\n  keep();\n\nThird paragraph");
+});
+
 test("readable HTML preserves inline adjacency and structural boundaries", async (t) => {
   t.mock.method(dns, "lookup", async () => approved);
   const html = "<head><title>Fixture</title></head><body>Intro"

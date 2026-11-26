@@ -549,7 +549,9 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
     } else if (defaultTreeAdapter.isTextNode(node)) {
       parts.push(node.value);
     } else if (defaultTreeAdapter.isElementNode(node)) {
-      const { tagName, childNodes } = node;
+      const { tagName, childNodes, namespaceURI, attrs } = node;
+      const isHtml = namespaceURI === htmlConstants.NS.HTML;
+      if (isHtml && attrs.some(attr => attr.name === "hidden")) continue;
       if (noiseTags.has(tagName) || tagName === "title") {
         if (!inPre) parts.push("\n");
         continue;
@@ -558,7 +560,7 @@ function extractReadableHtml(html: string): { title?: string; content: string } 
       if (inPre) {
         // Preserve parsed text across nested markup, with explicit line breaks.
         if (tagName === "br") parts.push("\n");
-      } else if (tagName === "pre" && node.namespaceURI === htmlConstants.NS.HTML) {
+      } else if (isHtml && tagName === "pre") {
         flushBlock();
         inPre = true;
         pending.push(endPre);
