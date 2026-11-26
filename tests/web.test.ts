@@ -107,6 +107,46 @@ test("HTML comments preserve adjacent words, explicit spaces and structural boun
   assert.equal(extractReadableText(html), "code and two words\n\nNext paragraph\n\nOne Two");
 });
 
+test("readable HTML preserves preformatted code layout and cleans surrounding prose", () => {
+  const html = "<p> Before   the example </p>"
+    + "<pre><code>  if (x &lt; 2) {\n\t<em>run</em>();  \n\n  }</code><br>  done\n</pre>"
+    + "<p> After   the example </p>";
+  assert.equal(extractReadableText(html), [
+    "Before the example",
+    "  if (x < 2) {\n\trun();  \n\n  }\n  done\n",
+    "After the example",
+  ].join("\n\n"));
+});
+
+test("readable HTML keeps block, table and media children of preformatted blocks apart", () => {
+  assert.equal(
+    extractReadableText("<p>A</p><pre><div>line one</div><div>line two</div></pre>"),
+    "A\n\nline one\nline two",
+  );
+  assert.equal(extractReadableText("<pre><div>  one</div>\n<div>  two</div>\n</pre>"), "  one\n  two\n");
+  assert.equal(
+    extractReadableText("<pre><table><tr><td>1</td><td>x</td></tr><tr><td>2</td><td>y</td></tr></table></pre>"),
+    "1 x\n2 y",
+  );
+  assert.equal(extractReadableText("<pre>a<img alt=z>b c<input> d</pre>"), "a b c d");
+  assert.equal(extractReadableText("<pre>before<script>x()</script>after</pre>"), "before\nafter");
+});
+
+test("readable HTML drops whitespace-only preformatted blocks", () => {
+  assert.equal(extractReadableText("<p>A</p><pre>   \n  </pre><p>B</p>"), "A\n\nB");
+  assert.equal(extractReadableText("<pre> \n</pre>"), "");
+});
+
+test("readable HTML omits hidden subtrees and keeps visible text in order", () => {
+  const html = "<article><p>First paragraph</p>"
+    + "<section hidden><p>Hidden placeholder</p></section>"
+    + '<p>Second para<span hidden="">hidden inline text</span>graph</p>'
+    + '<pre><code>  keep<span hidden="until-found">hidden code</span>();</code></pre>'
+    + '<p hidden="false">Another hidden placeholder</p>'
+    + '<p aria-hidden="true">Third paragraph</p></article>';
+  assert.equal(extractReadableText(html), "First paragraph\n\nSecond paragraph\n\n  keep();\n\nThird paragraph");
+});
+
 test("readable HTML preserves inline adjacency and structural boundaries", async (t) => {
   t.mock.method(dns, "lookup", async () => approved);
   const html = "<head><title>Fixture</title></head><body>Intro"
